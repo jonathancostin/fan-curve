@@ -1,0 +1,26 @@
+import FanCurveCore
+
+let curve = FanCurve(points: [
+    CurvePoint(temperature: 40, percentage: 10),
+    CurvePoint(temperature: 60, percentage: 50),
+    CurvePoint(temperature: 80, percentage: 90)
+])
+precondition(curve.percentage(at: 20) == 10)
+precondition(curve.percentage(at: 50) == 30)
+precondition(curve.percentage(at: 100) == 90)
+precondition(FanCurve.isValid(FanCurve.defaultPoints))
+precondition(!FanCurve.isValid([
+    CurvePoint(temperature: 40, percentage: 80),
+    CurvePoint(temperature: 60, percentage: 20)
+]))
+precondition(!FanCurve.isValid([
+    CurvePoint(temperature: 40, percentage: 20),
+    CurvePoint(temperature: 41, percentage: 30)
+]))
+
+let fan = FanRange(id: 0, minimumRPM: 2_000, maximumRPM: 8_000)
+precondition(fan.rpm(at: -1) == 2_000)
+precondition(fan.rpm(at: 50) == 5_000)
+precondition(fan.rpm(at: 101) == 8_000)
+
+print("FanCurve checks passed")

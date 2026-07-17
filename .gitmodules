@@ -1,0 +1,3 @@
+[submodule "Vendor/Stats"]
+	path = Vendor/Stats
+	url = https://github.com/exelban/stats.git
