@@ -78,3 +78,17 @@ public struct FanRange: Equatable, Sendable {
         minimumRPM + ((maximumRPM - minimumRPM) * min(100, max(0, percentage)) / 100)
     }
 }
+
+public enum FanSmoothing {
+    public static func next(
+        current: Int,
+        target: Int,
+        riseLimit: Int = 10,
+        fallLimit: Int = 3,
+        deadband: Int = 2
+    ) -> Int {
+        let difference = target - current
+        guard abs(difference) > deadband else { return current }
+        return current + min(riseLimit, max(-fallLimit, difference))
+    }
+}

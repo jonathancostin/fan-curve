@@ -121,7 +121,8 @@ final class FanController: NSObject {
             outputPercentage = 0
             return
         }
-        outputPercentage = Int(FanCurve(points: points).percentage(at: averageTemperature).rounded())
+        let target = Int(FanCurve(points: points).percentage(at: averageTemperature).rounded())
+        outputPercentage = isEnabled ? FanSmoothing.next(current: outputPercentage, target: target) : target
         if isEnabled { writeState(enabled: true) }
     }
 
