@@ -252,6 +252,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem.button?.target = self
         statusItem.button?.action = #selector(togglePopover)
         statusItem.button?.toolTip = "Fan Curve"
+        statusItem.button?.image = NSImage(systemSymbolName: "fanblades", accessibilityDescription: "Fan Curve")
+        statusItem.button?.imagePosition = .imageOnly
         controller.onUpdate = { [weak self] in self?.refresh() }
         refresh()
     }
@@ -259,8 +261,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) { controller.shutdown() }
 
     private func refresh() {
-        statusItem.button?.title = controller.averageTemperature.map { "\(Int($0.rounded()))°" } ?? "—°"
-        content.refresh()
+        if popover.isShown { content.refresh() }
     }
 
     @objc private func togglePopover() {
@@ -268,6 +269,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if popover.isShown {
             popover.performClose(nil)
         } else {
+            content.refresh()
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         }
     }
