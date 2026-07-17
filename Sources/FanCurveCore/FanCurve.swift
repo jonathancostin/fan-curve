@@ -63,6 +63,18 @@ public struct ControlState: Codable, Sendable {
     }
 }
 
+public struct ControlAcknowledgement: Codable, Sendable {
+    public let heartbeat: TimeInterval
+    public let percentage: Int
+    public let ownerUID: UInt32
+
+    public init(heartbeat: TimeInterval, percentage: Int, ownerUID: UInt32) {
+        self.heartbeat = heartbeat
+        self.percentage = percentage
+        self.ownerUID = ownerUID
+    }
+}
+
 public struct FanRange: Equatable, Sendable {
     public let id: Int
     public let minimumRPM: Int

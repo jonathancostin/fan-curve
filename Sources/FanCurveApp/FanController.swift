@@ -23,7 +23,7 @@ final class FanController: NSObject {
 
     private let worker = DispatchQueue(label: "com.jonathan.FanCurve.smc")
     private let statePath = "/tmp/fancurve-\(getuid()).json"
-    private var helperProcess: Process?
+    private let acknowledgementPath = "/var/run/fancurve-\(getuid()).ack"
     private var timer: Timer?
     private var sleepObserver: NSObjectProtocol?
 
@@ -68,15 +68,15 @@ final class FanController: NSObject {
                 onUpdate?()
                 return
             }
-            guard FileManager.default.isExecutableFile(atPath: helperPath) else {
+            guard FileManager.default.isExecutableFile(atPath: installedHelperPath) else {
                 isEnabled = false
-                status = "Helper missing — rebuild the app"
+                status = "Install the background helper first"
                 onUpdate?()
                 return
             }
             writeState(enabled: true)
             guard isEnabled else { onUpdate?(); return }
-            startHelper()
+            status = "Waiting for background helper…"
         } else {
             writeState(enabled: false)
             status = reason ?? "Apple automatic control"
@@ -93,26 +93,54 @@ final class FanController: NSObject {
         }
     }
 
-    private var helperPath: String {
-        Bundle.main.bundlePath + "/Contents/Resources/FanCurveHelper"
+    private var installedHelperPath: String {
+        "/Library/PrivilegedHelperTools/com.jonathan.FanCurveHelper"
     }
 
     private func poll() {
+        let expectedPercentage = outputPercentage
+        let acknowledgementPath = acknowledgementPath
         worker.async { [weak self] in
             let values = Self.cpuKeys.compactMap { SMC.shared.getValue($0) }.filter { (0...110).contains($0) }
             let average = values.isEmpty ? nil : values.reduce(0, +) / Double(values.count)
-            let forced = SMC.shared.getValue(SMC.shared.fanModeKey(0)) == Double(FanMode.forced.rawValue)
+            let active = Self.controlIsActive(expectedPercentage: expectedPercentage, acknowledgementPath: acknowledgementPath)
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.averageTemperature = average
                 if average == nil, self.isEnabled {
                     self.setEnabled(false, reason: "No CPU temperature reading")
                 } else {
-                    if self.isEnabled, forced { self.status = "Curve active" }
+                    if self.isEnabled {
+                        self.status = active ? "Curve active" : "Waiting for background helper…"
+                    }
                     self.refreshOutput()
                     self.onUpdate?()
                 }
             }
+        }
+    }
+
+    private static func controlIsActive(expectedPercentage: Int, acknowledgementPath: String) -> Bool {
+        var info = stat()
+        guard lstat(acknowledgementPath, &info) == 0,
+              (info.st_mode & S_IFMT) == S_IFREG,
+              info.st_uid == 0,
+              (info.st_mode & 0o022) == 0,
+              let data = FileManager.default.contents(atPath: acknowledgementPath),
+              let acknowledgement = try? JSONDecoder().decode(ControlAcknowledgement.self, from: data),
+              acknowledgement.ownerUID == getuid(),
+              acknowledgement.percentage == expectedPercentage,
+              (0...2.5).contains(Date().timeIntervalSince1970 - acknowledgement.heartbeat),
+              let rawCount = SMC.shared.getValue("FNum"), rawCount >= 1, rawCount <= 8 else { return false }
+
+        return (0..<Int(rawCount)).allSatisfy { id in
+            guard let minimum = SMC.shared.getValue("F\(id)Mn"),
+                  let maximum = SMC.shared.getValue("F\(id)Mx"),
+                  let target = SMC.shared.getValue("F\(id)Tg") else { return false }
+            let expected = FanRange(id: id, minimumRPM: Int(minimum.rounded()), maximumRPM: Int(maximum.rounded()))
+                .rpm(at: expectedPercentage)
+            return SMC.shared.getValue(SMC.shared.fanModeKey(id)) == Double(FanMode.forced.rawValue)
+                && abs(target - Double(expected)) <= 5
         }
     }
 
@@ -145,34 +173,4 @@ final class FanController: NSObject {
         }
     }
 
-    private func startHelper() {
-        guard helperProcess == nil || helperProcess?.isRunning == false else { return }
-        let escapedHelper = helperPath.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
-        let escapedState = statePath.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
-        let command = "quoted form of \"\(escapedHelper)\" & \" \" & quoted form of \"\(escapedState)\" & \" \(getuid())\""
-
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-        process.arguments = ["-e", "do shell script (\(command)) with administrator privileges"]
-        process.terminationHandler = { [weak self] process in
-            DispatchQueue.main.async {
-                guard let self else { return }
-                self.helperProcess = nil
-                if self.isEnabled {
-                    self.isEnabled = false
-                    self.writeState(enabled: false)
-                    self.status = process.terminationStatus == 0 ? "Controller stopped" : "Administrator approval canceled"
-                    self.onUpdate?()
-                }
-            }
-        }
-        do {
-            try process.run()
-            helperProcess = process
-            status = "Waiting for administrator approval…"
-        } catch {
-            isEnabled = false
-            status = "Could not start controller"
-        }
-    }
 }
