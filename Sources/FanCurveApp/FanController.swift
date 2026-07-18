@@ -32,7 +32,6 @@ final class FanController: NSObject {
     private override init() {
         if let data = UserDefaults.standard.data(forKey: Self.pointsKey),
            let saved = try? JSONDecoder().decode([CurvePoint].self, from: data),
-           saved.count == FanCurve.defaultPoints.count,
            FanCurve.isValid(saved) {
             points = saved
         } else {
@@ -53,7 +52,7 @@ final class FanController: NSObject {
 
     func updatePoints(_ newPoints: [CurvePoint]) {
         let sorted = newPoints.sorted { $0.temperature < $1.temperature }
-        guard sorted.count == FanCurve.defaultPoints.count, FanCurve.isValid(sorted) else { return }
+        guard FanCurve.isValid(sorted) else { return }
         points = sorted
         if let data = try? JSONEncoder().encode(points) {
             UserDefaults.standard.set(data, forKey: Self.pointsKey)

@@ -3,10 +3,19 @@ import FanCurveCore
 import Foundation
 
 final class CurveView: NSView {
-    var points = FanCurve.defaultPoints { didSet { needsDisplay = true } }
+    var points = FanCurve.defaultPoints {
+        didSet {
+            if let selectedIndex, !points.indices.contains(selectedIndex) { self.selectedIndex = nil }
+            needsDisplay = true
+        }
+    }
     var currentTemperature: Double? { didSet { needsDisplay = true } }
     var onChange: (([CurvePoint]) -> Void)?
+    var onSelectionChange: (() -> Void)?
     private var selectedIndex: Int?
+
+    var canAddPoint: Bool { FanCurve.addingPoint(to: points) != nil }
+    var canDeletePoint: Bool { selectedIndex != nil && points.count > FanCurve.minimumPointCount }
 
     override var acceptsFirstResponder: Bool { true }
     override var isFlipped: Bool { true }
@@ -35,6 +44,7 @@ final class CurveView: NSView {
         window?.makeFirstResponder(self)
         let location = convert(event.locationInWindow, from: nil)
         selectedIndex = points.indices.min { distance(position(points[$0]), location) < distance(position(points[$1]), location) }
+        onSelectionChange?()
         updateSelected(at: location)
     }
 
@@ -43,8 +53,26 @@ final class CurveView: NSView {
     }
 
     override func mouseUp(with event: NSEvent) {
-        selectedIndex = nil
         needsDisplay = true
+    }
+
+    func addPoint() {
+        guard let updated = FanCurve.addingPoint(to: points) else { return }
+        selectedIndex = updated.indices.first { index in
+            !points.contains { $0.temperature == updated[index].temperature }
+        }
+        points = updated
+        onChange?(updated)
+        onSelectionChange?()
+    }
+
+    func deleteSelectedPoint() {
+        guard let selectedIndex,
+              let updated = FanCurve.deletingPoint(at: selectedIndex, from: points) else { return }
+        self.selectedIndex = min(selectedIndex, updated.count - 1)
+        points = updated
+        onChange?(updated)
+        onSelectionChange?()
     }
 
     override func keyDown(with event: NSEvent) {
@@ -205,6 +233,8 @@ final class MainViewController: NSViewController {
     private let toggle = NSSwitch()
     private let graph = CurveView()
     private let historyGraph = TemperatureHistoryView()
+    private let addPointButton = NSButton(title: "Add Point", target: nil, action: nil)
+    private let deletePointButton = NSButton(title: "Delete Point", target: nil, action: nil)
 
     init(controller: FanController) {
         self.controller = controller
@@ -217,10 +247,20 @@ final class MainViewController: NSViewController {
         view = NSView()
         graph.points = controller.points
         graph.onChange = { [weak controller] in controller?.updatePoints($0) }
+        graph.onSelectionChange = { [weak self] in self?.refreshPointButtons() }
         graph.translatesAutoresizingMaskIntoConstraints = false
         graph.heightAnchor.constraint(equalToConstant: 255).isActive = true
         historyGraph.translatesAutoresizingMaskIntoConstraints = false
         historyGraph.heightAnchor.constraint(equalToConstant: 90).isActive = true
+
+        let pointHelp = NSTextField(labelWithString: "Select and drag. Add uses the widest gap; keep 2+ points.")
+        pointHelp.font = .systemFont(ofSize: 11)
+        pointHelp.textColor = .secondaryLabelColor
+        addPointButton.target = self
+        addPointButton.action = #selector(addPoint)
+        deletePointButton.target = self
+        deletePointButton.action = #selector(deletePoint)
+        let pointRow = NSStackView(views: [pointHelp, NSView(), addPointButton, deletePointButton])
 
         averageValue.font = .systemFont(ofSize: 30, weight: .semibold)
         outputValue.font = .systemFont(ofSize: 22, weight: .bold)
@@ -251,7 +291,7 @@ final class MainViewController: NSViewController {
         let historyLabel = NSTextField(labelWithString: "Temperature history · 24h")
         historyLabel.font = .systemFont(ofSize: 11, weight: .medium)
 
-        let stack = NSStackView(views: [header, graph, historyLabel, historyGraph, controlRow, statusRow, quitRow])
+        let stack = NSStackView(views: [header, graph, pointRow, historyLabel, historyGraph, controlRow, statusRow, quitRow])
         stack.orientation = .vertical
         stack.spacing = 14
         stack.translatesAutoresizingMaskIntoConstraints = false
@@ -274,6 +314,7 @@ final class MainViewController: NSViewController {
         graph.points = controller.points
         graph.currentTemperature = controller.averageTemperature
         historyGraph.samples = controller.temperatureHistory
+        refreshPointButtons()
     }
 
     private func metric(_ title: String, value: NSTextField, alignment: NSTextAlignment = .left) -> NSView {
@@ -288,7 +329,14 @@ final class MainViewController: NSViewController {
     }
 
     @objc private func toggleControl() { controller.setEnabled(toggle.state == .on) }
+    @objc private func addPoint() { graph.addPoint() }
+    @objc private func deletePoint() { graph.deleteSelectedPoint() }
     @objc private func quitApp() { NSApplication.shared.terminate(nil) }
+
+    private func refreshPointButtons() {
+        addPointButton.isEnabled = graph.canAddPoint
+        deletePointButton.isEnabled = graph.canDeletePoint
+    }
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {

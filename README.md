@@ -1,6 +1,6 @@
 # Fan Curve
 
-A tiny native macOS menu-bar app for this M5 Pro MacBook Pro. Drag five points on a temperature-to-fan graph; the app displays average CPU temperature and applies the interpolated fan percentage across both fans.
+A tiny native macOS menu-bar app for this M5 Pro MacBook Pro. Add, delete, or drag points on a temperature-to-fan graph; the app displays average CPU temperature and applies the interpolated fan percentage across both fans.
 
 `0%` means the detected minimum safe RPM and `100%` means the detected maximum. A one-time installer adds the root background helper required for fan writes. After that, enabling the curve does not prompt again. Quitting, disabling control, losing the heartbeat, sleeping, or reaching serious thermal pressure restores Apple automatic fan control.
 

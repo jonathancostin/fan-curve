@@ -17,6 +17,29 @@ precondition(!FanCurve.isValid([
     CurvePoint(temperature: 40, percentage: 20),
     CurvePoint(temperature: 41, percentage: 30)
 ]))
+precondition(!FanCurve.isValid([CurvePoint(temperature: 40, percentage: 20)]))
+
+let added = FanCurve.addingPoint(to: [
+    CurvePoint(temperature: 40, percentage: 20),
+    CurvePoint(temperature: 60, percentage: 40),
+    CurvePoint(temperature: 90, percentage: 100)
+])!
+precondition(added == [
+    CurvePoint(temperature: 40, percentage: 20),
+    CurvePoint(temperature: 60, percentage: 40),
+    CurvePoint(temperature: 75, percentage: 70),
+    CurvePoint(temperature: 90, percentage: 100)
+])
+precondition(FanCurve.deletingPoint(at: 2, from: added) == [
+    CurvePoint(temperature: 40, percentage: 20),
+    CurvePoint(temperature: 60, percentage: 40),
+    CurvePoint(temperature: 90, percentage: 100)
+])
+precondition(FanCurve.deletingPoint(at: 0, from: Array(added.prefix(2))) == nil)
+precondition(FanCurve.addingPoint(to: [
+    CurvePoint(temperature: 40, percentage: 20),
+    CurvePoint(temperature: 42, percentage: 40)
+]) == nil)
 
 let fan = FanRange(id: 0, minimumRPM: 2_000, maximumRPM: 8_000)
 precondition(fan.rpm(at: -1) == 2_000)

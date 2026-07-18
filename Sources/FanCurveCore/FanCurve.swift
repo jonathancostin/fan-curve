@@ -35,6 +35,7 @@ public enum TemperatureHistory {
 }
 
 public struct FanCurve: Sendable {
+    public static let minimumPointCount = 2
     public static let temperatureRange = 30.0...100.0
     public static let defaultPoints = [
         CurvePoint(temperature: 35, percentage: 0),
@@ -47,13 +48,36 @@ public struct FanCurve: Sendable {
     public var points: [CurvePoint]
 
     public static func isValid(_ points: [CurvePoint]) -> Bool {
-        guard !points.isEmpty,
+        guard points.count >= minimumPointCount,
               points.allSatisfy({ temperatureRange.contains($0.temperature) && (0...100).contains($0.percentage) }) else {
             return false
         }
         return zip(points, points.dropFirst()).allSatisfy { left, right in
             right.temperature - left.temperature >= 2 && right.percentage >= left.percentage
         }
+    }
+
+    public static func addingPoint(to points: [CurvePoint]) -> [CurvePoint]? {
+        guard isValid(points),
+              let index = zip(points.indices, zip(points, points.dropFirst())).max(by: {
+                  $0.1.1.temperature - $0.1.0.temperature < $1.1.1.temperature - $1.1.0.temperature
+              })?.0 else { return nil }
+        let left = points[index]
+        let right = points[index + 1]
+        guard right.temperature - left.temperature >= 4 else { return nil }
+        var updated = points
+        updated.insert(CurvePoint(
+            temperature: ((left.temperature + right.temperature) / 2).rounded(),
+            percentage: ((left.percentage + right.percentage) / 2).rounded()
+        ), at: index + 1)
+        return updated
+    }
+
+    public static func deletingPoint(at index: Int, from points: [CurvePoint]) -> [CurvePoint]? {
+        guard isValid(points), points.count > minimumPointCount, points.indices.contains(index) else { return nil }
+        var updated = points
+        updated.remove(at: index)
+        return updated
     }
 
     public init(points: [CurvePoint]) {
