@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   release:
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: codebuild-fan-curve-release-runner-${{ github.run_id }}-${{ github.run_attempt }}
     timeout-minutes: 15
     env:
       GH_TOKEN: ${{ github.token }}
@@ -31,6 +31,12 @@ jobs:
 
       - name: Create release
         run: |
+          if ! command -v gh >/dev/null; then
+            curl -fsSL https://github.com/cli/cli/releases/download/v2.96.0/gh_2.96.0_linux_amd64.tar.gz \
+              | tar -xz -C "$RUNNER_TEMP"
+            export PATH="$RUNNER_TEMP/gh_2.96.0_linux_amd64/bin:$PATH"
+          fi
+
           if gh release view "v$VERSION" >/dev/null 2>&1; then
             gh release download "v$VERSION" --pattern "fan-curve-$VERSION-source.tar.gz" --dir "$RUNNER_TEMP"
             exit
