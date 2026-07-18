@@ -95,8 +95,8 @@ public enum FanSmoothing {
     public static func next(
         current: Int,
         target: Int,
-        riseLimit: Int = 10,
-        fallLimit: Int = 3,
+        riseLimit: Int = 5,
+        fallLimit: Int = 2,
         deadband: Int = 2
     ) -> Int {
         let difference = target - current

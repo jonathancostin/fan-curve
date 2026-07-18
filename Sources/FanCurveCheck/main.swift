@@ -23,8 +23,8 @@ precondition(fan.rpm(at: -1) == 2_000)
 precondition(fan.rpm(at: 50) == 5_000)
 precondition(fan.rpm(at: 101) == 8_000)
 
-precondition(FanSmoothing.next(current: 20, target: 80) == 30)
-precondition(FanSmoothing.next(current: 80, target: 20) == 77)
+precondition(FanSmoothing.next(current: 20, target: 80) == 25)
+precondition(FanSmoothing.next(current: 80, target: 20) == 78)
 precondition(FanSmoothing.next(current: 50, target: 53) == 53)
 precondition(FanSmoothing.next(current: 50, target: 52) == 50)
 
