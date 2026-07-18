@@ -262,7 +262,7 @@ final class MainViewController: NSViewController {
         historyGraph.translatesAutoresizingMaskIntoConstraints = false
         historyGraph.heightAnchor.constraint(equalToConstant: 90).isActive = true
 
-        let pointHelp = NSTextField(labelWithString: "Select and drag. Add uses the widest gap; keep 2+ points.")
+        let pointHelp = NSTextField(labelWithString: "Select and drag points.")
         pointHelp.font = .systemFont(ofSize: 11)
         pointHelp.textColor = .secondaryLabelColor
         addPointButton.target = self
