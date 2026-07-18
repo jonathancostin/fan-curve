@@ -14,4 +14,16 @@ open build/FanCurve.app
 
 Re-run the helper installer after replacing the app with a newer build. Remove it with `./scripts/install-helper.sh uninstall`.
 
+## Homebrew
+
+The tap builds Fan Curve locally, so no Apple Developer membership is required:
+
+```sh
+brew install --cask jonathancostin/tap/fan-curve
+fan-curve-helper install
+open -a "Fan Curve"
+```
+
+Update with `brew upgrade --cask fan-curve`, then run `fan-curve-helper install` again. Remove the privileged helper before uninstalling with `fan-curve-helper uninstall`.
+
 The SMC implementation is reused from [Stats](https://github.com/exelban/stats) under its MIT license and pinned as a Git submodule.

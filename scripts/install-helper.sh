@@ -5,10 +5,15 @@ action=${1:-install}
 [[ $action == install || $action == uninstall ]] || { echo "usage: $0 [install|uninstall]" >&2; exit 2; }
 [[ $EUID != 0 ]] || { echo "run this as your normal macOS user" >&2; exit 2; }
 
-project_dir=${0:A:h:h}
-helper_source="/Applications/FanCurve.app/Contents/Resources/FanCurveHelper"
-[[ -x $helper_source ]] || helper_source="$project_dir/build/FanCurve.app/Contents/Resources/FanCurveHelper"
-template_source="$project_dir/Resources/com.jonathan.FanCurveHelper.plist"
+script_dir=${0:A:h}
+project_dir=${script_dir:h}
+resource_dir="/Applications/FanCurve.app/Contents/Resources"
+[[ -x $resource_dir/FanCurveHelper && -f $resource_dir/com.jonathan.FanCurveHelper.plist ]] \
+    || resource_dir="$project_dir/build/FanCurve.app/Contents/Resources"
+[[ -x $resource_dir/FanCurveHelper && -f $resource_dir/com.jonathan.FanCurveHelper.plist ]] \
+    || resource_dir="$script_dir"
+helper_source="$resource_dir/FanCurveHelper"
+template_source="$resource_dir/com.jonathan.FanCurveHelper.plist"
 
 if [[ $action == install ]]; then
     [[ -x $helper_source && -f $template_source ]] || { echo "build and install FanCurve.app first" >&2; exit 1; }
