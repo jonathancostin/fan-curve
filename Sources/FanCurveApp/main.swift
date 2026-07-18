@@ -182,7 +182,16 @@ final class CurveView: NSView {
 }
 
 final class TemperatureHistoryView: NSView {
-    var samples: [TemperatureSample] = [] { didSet { needsDisplay = true } }
+    var samples: [TemperatureSample] = [] {
+        didSet {
+            needsDisplay = true
+            guard let latest = samples.last, let minimum = samples.map(\.temperature).min(), let maximum = samples.map(\.temperature).max() else {
+                setAccessibilityValue("No samples yet")
+                return
+            }
+            setAccessibilityValue(String(format: "Latest %.1f degrees Celsius; range %.1f to %.1f degrees Celsius", latest.temperature, minimum, maximum))
+        }
+    }
     override var isFlipped: Bool { true }
 
     override init(frame frameRect: NSRect) {

@@ -40,6 +40,14 @@ precondition(FanCurve.addingPoint(to: [
     CurvePoint(temperature: 40, percentage: 20),
     CurvePoint(temperature: 42, percentage: 40)
 ]) == nil)
+precondition(FanCurve.addingPoint(to: [
+    CurvePoint(temperature: 30.1, percentage: 20),
+    CurvePoint(temperature: 34.1, percentage: 40)
+]) == [
+    CurvePoint(temperature: 30.1, percentage: 20),
+    CurvePoint(temperature: 32.1, percentage: 30),
+    CurvePoint(temperature: 34.1, percentage: 40)
+])
 
 let fan = FanRange(id: 0, minimumRPM: 2_000, maximumRPM: 8_000)
 precondition(fan.rpm(at: -1) == 2_000)

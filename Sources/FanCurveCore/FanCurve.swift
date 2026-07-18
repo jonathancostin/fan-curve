@@ -67,7 +67,7 @@ public struct FanCurve: Sendable {
         guard right.temperature - left.temperature >= 4 else { return nil }
         var updated = points
         updated.insert(CurvePoint(
-            temperature: ((left.temperature + right.temperature) / 2).rounded(),
+            temperature: (left.temperature + right.temperature) / 2,
             percentage: ((left.percentage + right.percentage) / 2).rounded()
         ), at: index + 1)
         return updated
