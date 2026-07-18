@@ -3,7 +3,12 @@ set -euo pipefail
 
 action=${1:-install}
 [[ $action == install || $action == uninstall ]] || { echo "usage: $0 [install|uninstall]" >&2; exit 2; }
-[[ $EUID != 0 ]] || { echo "run this as your normal macOS user" >&2; exit 2; }
+if [[ $EUID == 0 ]]; then
+    owner_uid=$(/usr/bin/id -u "${SUDO_USER:-}" 2>/dev/null) || owner_uid=
+    [[ $owner_uid == <1-> && ${SUDO_UID:-} == $owner_uid ]] || { echo "run with sudo from a normal macOS user" >&2; exit 2; }
+else
+    owner_uid=$(id -u)
+fi
 
 script_dir=${0:A:h}
 project_dir=${script_dir:h}
@@ -26,10 +31,8 @@ fi
 
 # ponytail: ad-hoc local builds cannot use notarization-required SMAppService;
 # this pins pre-authorization hashes and runs no user-writable script as root.
-/usr/bin/osascript -l JavaScript - "$action" "$(id -u)" "$helper_source" "$template_source" "$helper_hash" "$template_hash" <<'JXA'
-function run(argv) {
-    const quote = value => "'" + String(value).replace(/'/g, "'\"'\"'") + "'";
-    const rootScript = String.raw`set -euo pipefail
+root_script=$(/bin/cat <<'ROOT_SCRIPT'
+set -euo pipefail
 
 action=$1
 owner_uid=$2
@@ -41,6 +44,14 @@ label=com.jonathan.FanCurveHelper
 helper_destination=/Library/PrivilegedHelperTools/$label
 plist_destination=/Library/LaunchDaemons/$label.plist
 
+bootstrap_helper() {
+    for attempt in {1..20}; do
+        /bin/launchctl bootstrap system $plist_destination && return
+        /bin/sleep 0.25
+    done
+    return 1
+}
+
 if [[ $action == uninstall ]]; then
     set +e
     /bin/launchctl bootout system/$label >/dev/null 2>&1
@@ -50,7 +61,7 @@ if [[ $action == uninstall ]]; then
         /bin/sleep 0.25
     done
     if [[ -e /var/run/fancurve.active ]]; then
-        /bin/launchctl bootstrap system $plist_destination
+        bootstrap_helper
         /bin/launchctl kickstart -k system/$label
         echo "automatic fan restoration was not confirmed; helper restarted, disable the curve and retry" >&2
         exit 1
@@ -85,7 +96,7 @@ set -e
 if /usr/bin/install -d -o root -g wheel -m 0755 /Library/PrivilegedHelperTools \
     && /usr/bin/install -o root -g wheel -m 0755 $stage/helper $helper_destination \
     && /usr/bin/install -o root -g wheel -m 0644 $stage/$label.plist $plist_destination \
-    && /bin/launchctl bootstrap system $plist_destination \
+    && bootstrap_helper \
     && /bin/launchctl enable system/$label \
     && /bin/launchctl kickstart -k system/$label; then
     echo "Fan Curve background helper installed for UID $owner_uid"
@@ -98,7 +109,7 @@ else
     /bin/launchctl bootout system/$label >/dev/null 2>&1
     if (( old_helper )); then /usr/bin/install -o root -g wheel -m 0755 $stage/old-helper $helper_destination || rollback_failed=1; else /bin/rm -f $helper_destination || rollback_failed=1; fi
     if (( old_plist )); then /usr/bin/install -o root -g wheel -m 0644 $stage/old.plist $plist_destination || rollback_failed=1; else /bin/rm -f $plist_destination || rollback_failed=1; fi
-    if (( old_loaded && old_plist )); then /bin/launchctl bootstrap system $plist_destination || rollback_failed=1; fi
+    if (( old_loaded && old_plist )); then bootstrap_helper || rollback_failed=1; fi
     set -e
     if (( rollback_failed )); then
         echo "helper installation and rollback both failed" >&2
@@ -106,7 +117,20 @@ else
         echo "helper installation failed; previous service restored" >&2
     fi
     exit $failure
-fi`;
+fi
+ROOT_SCRIPT
+)
+
+installer_args=("$action" "$owner_uid" "$helper_source" "$template_source" "$helper_hash" "$template_hash")
+if [[ $EUID == 0 ]]; then
+    /bin/zsh -c "$root_script" -- "${installer_args[@]}"
+    exit
+fi
+
+/usr/bin/osascript -l JavaScript - "$root_script" "${installer_args[@]}" <<'JXA'
+function run(argv) {
+    const quote = value => "'" + String(value).replace(/'/g, "'\"'\"'") + "'";
+    const rootScript = String(argv.shift());
 
     const app = Application.currentApplication();
     app.includeStandardAdditions = true;
