@@ -19,8 +19,7 @@ Re-run the helper installer after replacing the app with a newer build. Remove i
 The tap builds Fan Curve locally, so no Apple Developer membership is required:
 
 ```sh
-brew tap jonathancostin/tap
-brew install --cask fan-curve
+brew install --cask jonathancostin/tap/fan-curve
 fan-curve-helper install
 open -a "Fan Curve"
 ```
