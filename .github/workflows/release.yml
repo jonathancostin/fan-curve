@@ -1,0 +1,82 @@
+name: Release to Homebrew
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Choose version
+        run: |
+          version="1.0.${GITHUB_RUN_NUMBER}"
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          echo "ARCHIVE=$RUNNER_TEMP/fan-curve-$version-source.tar.gz" >> "$GITHUB_ENV"
+
+      - name: Create release
+        run: |
+          if gh release view "v$VERSION" >/dev/null 2>&1; then
+            gh release download "v$VERSION" --pattern "fan-curve-$VERSION-source.tar.gz" --dir "$RUNNER_TEMP"
+            exit
+          fi
+
+          source_dir="$RUNNER_TEMP/FanCurve-$VERSION"
+          mkdir -p "$source_dir/Vendor/Stats"
+          git archive "$GITHUB_SHA" | tar -xf - -C "$source_dir"
+          git -C Vendor/Stats archive HEAD | tar -xf - -C "$source_dir/Vendor/Stats"
+          python3 - "$source_dir/Resources/Info.plist" "$VERSION" "$GITHUB_RUN_NUMBER" <<'PY'
+          import plistlib
+          import sys
+
+          path, version, build = sys.argv[1:]
+          with open(path, "rb") as source:
+              info = plistlib.load(source)
+          info["CFBundleShortVersionString"] = version
+          info["CFBundleVersion"] = build
+          with open(path, "wb") as destination:
+              plistlib.dump(info, destination)
+          PY
+          tar -czf "$ARCHIVE" -C "$RUNNER_TEMP" "FanCurve-$VERSION"
+          gh release create "v$VERSION" "$ARCHIVE" \
+            --target "$GITHUB_SHA" \
+            --title "Fan Curve $VERSION" \
+            --notes "Automated release from $GITHUB_SHA."
+
+      - name: Update Homebrew tap
+        env:
+          TAP_DEPLOY_KEY: ${{ secrets.TAP_DEPLOY_KEY }}
+        run: |
+          sha256=$(sha256sum "$ARCHIVE" | awk '{print $1}')
+          key="$RUNNER_TEMP/tap-deploy-key"
+          known_hosts="$RUNNER_TEMP/known-hosts"
+          printf '%s\n' "$TAP_DEPLOY_KEY" > "$key"
+          chmod 600 "$key"
+          ssh-keyscan github.com > "$known_hosts" 2>/dev/null
+          export GIT_SSH_COMMAND="ssh -i $key -o IdentitiesOnly=yes -o UserKnownHostsFile=$known_hosts"
+
+          git clone git@github.com:jonathancostin/homebrew-tap.git "$RUNNER_TEMP/homebrew-tap"
+          cd "$RUNNER_TEMP/homebrew-tap"
+          sed -i -E "s/^  version \".*\"/  version \"$VERSION\"/" Casks/fan-curve.rb
+          sed -i -E "s/^  sha256 \".*\"/  sha256 \"$sha256\"/" Casks/fan-curve.rb
+          git diff --quiet && exit
+          git config user.name github-actions\[bot\]
+          git config user.email 41898282+github-actions\[bot\]@users.noreply.github.com
+          git add Casks/fan-curve.rb
+          git commit -m "fan-curve $VERSION"
+          git push
