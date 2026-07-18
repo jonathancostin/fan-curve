@@ -10,6 +10,30 @@ public struct CurvePoint: Codable, Equatable, Sendable {
     }
 }
 
+public struct TemperatureSample: Codable, Equatable, Sendable {
+    public let timestamp: TimeInterval
+    public let temperature: Double
+
+    public init(timestamp: TimeInterval, temperature: Double) {
+        self.timestamp = timestamp
+        self.temperature = temperature
+    }
+}
+
+public enum TemperatureHistory {
+    public static func appending(
+        _ temperature: Double,
+        at timestamp: TimeInterval,
+        to samples: [TemperatureSample],
+        interval: TimeInterval = 60,
+        retention: TimeInterval = 24 * 60 * 60
+    ) -> [TemperatureSample] {
+        let retained = samples.filter { timestamp - $0.timestamp < retention && $0.timestamp <= timestamp }
+        guard retained.last.map({ timestamp - $0.timestamp >= interval }) ?? true else { return retained }
+        return retained + [TemperatureSample(timestamp: timestamp, temperature: temperature)]
+    }
+}
+
 public struct FanCurve: Sendable {
     public static let temperatureRange = 30.0...100.0
     public static let defaultPoints = [

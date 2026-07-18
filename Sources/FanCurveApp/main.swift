@@ -153,6 +153,50 @@ final class CurveView: NSView {
     }
 }
 
+final class TemperatureHistoryView: NSView {
+    var samples: [TemperatureSample] = [] { didSet { needsDisplay = true } }
+    override var isFlipped: Bool { true }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        layer?.cornerRadius = 8
+        layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
+        setAccessibilityRole(.group)
+        setAccessibilityLabel("Average CPU temperature over the last 24 hours")
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        let plot = bounds.insetBy(dx: 10, dy: 10)
+        let attributes: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 9), .foregroundColor: NSColor.secondaryLabelColor]
+        guard samples.count > 1 else {
+            ("Collecting temperature history…" as NSString).draw(at: CGPoint(x: 12, y: bounds.midY - 6), withAttributes: attributes)
+            return
+        }
+
+        let end = Date().timeIntervalSince1970
+        let start = end - 24 * 60 * 60
+        let path = NSBezierPath()
+        path.lineWidth = 2
+        path.lineJoinStyle = .round
+        for (index, sample) in samples.enumerated() {
+            let x = plot.minX + (sample.timestamp - start) / (end - start) * plot.width
+            let y = plot.maxY - min(1, max(0, (sample.temperature - 20) / 90)) * plot.height
+            index == 0 ? path.move(to: CGPoint(x: x, y: y)) : path.line(to: CGPoint(x: x, y: y))
+        }
+        NSColor.systemOrange.setStroke()
+        path.stroke()
+        ("110°C" as NSString).draw(at: CGPoint(x: plot.minX, y: plot.minY), withAttributes: attributes)
+        ("20°C" as NSString).draw(at: CGPoint(x: plot.minX, y: plot.maxY - 11), withAttributes: attributes)
+        ("24h ago" as NSString).draw(at: CGPoint(x: plot.minX + 32, y: plot.maxY - 11), withAttributes: attributes)
+        let now = "now" as NSString
+        now.draw(at: CGPoint(x: plot.maxX - now.size(withAttributes: attributes).width, y: plot.maxY - 11), withAttributes: attributes)
+    }
+}
+
 final class MainViewController: NSViewController {
     private let controller: FanController
     private let averageValue = NSTextField(labelWithString: "—")
@@ -160,6 +204,7 @@ final class MainViewController: NSViewController {
     private let statusLabel = NSTextField(labelWithString: "Apple automatic control")
     private let toggle = NSSwitch()
     private let graph = CurveView()
+    private let historyGraph = TemperatureHistoryView()
 
     init(controller: FanController) {
         self.controller = controller
@@ -174,6 +219,8 @@ final class MainViewController: NSViewController {
         graph.onChange = { [weak controller] in controller?.updatePoints($0) }
         graph.translatesAutoresizingMaskIntoConstraints = false
         graph.heightAnchor.constraint(equalToConstant: 255).isActive = true
+        historyGraph.translatesAutoresizingMaskIntoConstraints = false
+        historyGraph.heightAnchor.constraint(equalToConstant: 90).isActive = true
 
         averageValue.font = .systemFont(ofSize: 30, weight: .semibold)
         outputValue.font = .systemFont(ofSize: 22, weight: .bold)
@@ -201,7 +248,10 @@ final class MainViewController: NSViewController {
         quit.bezelStyle = .rounded
         let quitRow = NSStackView(views: [NSView(), quit])
 
-        let stack = NSStackView(views: [header, graph, controlRow, statusRow, quitRow])
+        let historyLabel = NSTextField(labelWithString: "Temperature history · 24h")
+        historyLabel.font = .systemFont(ofSize: 11, weight: .medium)
+
+        let stack = NSStackView(views: [header, graph, historyLabel, historyGraph, controlRow, statusRow, quitRow])
         stack.orientation = .vertical
         stack.spacing = 14
         stack.translatesAutoresizingMaskIntoConstraints = false
@@ -223,6 +273,7 @@ final class MainViewController: NSViewController {
         toggle.state = controller.isEnabled ? .on : .off
         graph.points = controller.points
         graph.currentTemperature = controller.averageTemperature
+        historyGraph.samples = controller.temperatureHistory
     }
 
     private func metric(_ title: String, value: NSTextField, alignment: NSTextAlignment = .left) -> NSView {

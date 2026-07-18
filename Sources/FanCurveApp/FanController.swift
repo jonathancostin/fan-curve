@@ -13,9 +13,11 @@ final class FanController: NSObject {
         "Tp0g", "Tp0j", "Tp0m", "Tp0p", "Tp0u", "Tp0y"
     ]
     private static let pointsKey = "curvePoints"
+    private static let historyKey = "temperatureHistory"
 
     private(set) var points: [CurvePoint]
     private(set) var averageTemperature: Double?
+    private(set) var temperatureHistory: [TemperatureSample]
     private(set) var outputPercentage = 0
     private(set) var isEnabled = false
     private(set) var status = "Apple automatic control"
@@ -36,6 +38,8 @@ final class FanController: NSObject {
         } else {
             points = FanCurve.defaultPoints
         }
+        temperatureHistory = UserDefaults.standard.data(forKey: Self.historyKey)
+            .flatMap { try? JSONDecoder().decode([TemperatureSample].self, from: $0) } ?? []
         super.init()
 
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.poll() }
@@ -107,6 +111,7 @@ final class FanController: NSObject {
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.averageTemperature = average
+                if let average { self.recordTemperature(average) }
                 if average == nil, self.isEnabled {
                     self.setEnabled(false, reason: "No CPU temperature reading")
                 } else {
@@ -117,6 +122,15 @@ final class FanController: NSObject {
                     self.onUpdate?()
                 }
             }
+        }
+    }
+
+    private func recordTemperature(_ temperature: Double) {
+        let updated = TemperatureHistory.appending(temperature, at: Date().timeIntervalSince1970, to: temperatureHistory)
+        guard updated != temperatureHistory else { return }
+        temperatureHistory = updated
+        if let data = try? JSONEncoder().encode(updated) {
+            UserDefaults.standard.set(data, forKey: Self.historyKey)
         }
     }
 

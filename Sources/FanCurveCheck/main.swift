@@ -28,4 +28,17 @@ precondition(FanSmoothing.next(current: 80, target: 20) == 78)
 precondition(FanSmoothing.next(current: 50, target: 53) == 53)
 precondition(FanSmoothing.next(current: 50, target: 52) == 50)
 
+let history = TemperatureHistory.appending(
+    70,
+    at: 100_000,
+    to: [
+        TemperatureSample(timestamp: 10_000, temperature: 40),
+        TemperatureSample(timestamp: 99_950, temperature: 60)
+    ],
+    interval: 60,
+    retention: 86_400
+)
+precondition(history == [TemperatureSample(timestamp: 99_950, temperature: 60)])
+precondition(TemperatureHistory.appending(70, at: 100_010, to: history).count == 2)
+
 print("FanCurve checks passed")
