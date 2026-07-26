@@ -1,6 +1,7 @@
 import AppKit
 import FanCurveCore
 import Foundation
+import ServiceManagement
 
 final class CurveView: NSView {
     var points = FanCurve.defaultPoints {
@@ -244,6 +245,11 @@ final class MainViewController: NSViewController {
     private let historyGraph = TemperatureHistoryView()
     private let addPointButton = NSButton(title: "Add Point", target: nil, action: nil)
     private let deletePointButton = NSButton(title: "Delete Point", target: nil, action: nil)
+    private let resetPointButton = NSButton(title: "Reset", target: nil, action: nil)
+    private let helperButton = NSButton(title: "Install Helper", target: nil, action: nil)
+    private let copyReportButton = NSButton(title: "Copy Support Report", target: nil, action: nil)
+    private let loginToggle = NSSwitch()
+    private let hardwareLabel = NSTextField(labelWithString: "Checking hardware…")
 
     init(controller: FanController) {
         self.controller = controller
@@ -269,7 +275,11 @@ final class MainViewController: NSViewController {
         addPointButton.action = #selector(addPoint)
         deletePointButton.target = self
         deletePointButton.action = #selector(deletePoint)
-        let pointRow = NSStackView(views: [pointHelp, NSView(), addPointButton, deletePointButton])
+        resetPointButton.target = self
+        resetPointButton.action = #selector(resetPoints)
+        toggle.setAccessibilityLabel("Use fan curve")
+        loginToggle.setAccessibilityLabel("Launch at login")
+        let pointRow = NSStackView(views: [pointHelp, NSView(), addPointButton, deletePointButton, resetPointButton])
 
         averageValue.font = .systemFont(ofSize: 30, weight: .semibold)
         outputValue.font = .systemFont(ofSize: 22, weight: .bold)
@@ -283,24 +293,33 @@ final class MainViewController: NSViewController {
         toggle.action = #selector(toggleControl)
         let toggleLabel = NSTextField(labelWithString: "Use fan curve")
         toggleLabel.font = .systemFont(ofSize: 13, weight: .medium)
-        let controlRow = NSStackView(views: [toggleLabel, NSView(), toggle])
+        helperButton.target = self
+        helperButton.action = #selector(installHelper)
+        let controlRow = NSStackView(views: [toggleLabel, NSView(), helperButton, toggle])
+
+        loginToggle.target = self
+        loginToggle.action = #selector(toggleLaunchAtLogin)
+        let loginLabel = NSTextField(labelWithString: "Launch at login")
+        loginLabel.font = .systemFont(ofSize: 13, weight: .medium)
+        let loginRow = NSStackView(views: [loginLabel, NSView(), loginToggle])
 
         statusLabel.font = .systemFont(ofSize: 11)
         statusLabel.textColor = .secondaryLabelColor
-        let minimumLabel = NSTextField(labelWithString: "0% = minimum RPM")
-        minimumLabel.font = .systemFont(ofSize: 11)
-        minimumLabel.textColor = .secondaryLabelColor
-        minimumLabel.alignment = .right
-        let statusRow = NSStackView(views: [statusLabel, NSView(), minimumLabel])
+        hardwareLabel.font = .systemFont(ofSize: 11)
+        hardwareLabel.textColor = .secondaryLabelColor
+        hardwareLabel.alignment = .right
+        let statusRow = NSStackView(views: [statusLabel, NSView(), hardwareLabel])
 
+        copyReportButton.target = self
+        copyReportButton.action = #selector(copySupportReport)
         let quit = NSButton(title: "Quit", target: self, action: #selector(quitApp))
         quit.bezelStyle = .rounded
-        let quitRow = NSStackView(views: [NSView(), quit])
+        let quitRow = NSStackView(views: [copyReportButton, NSView(), quit])
 
         let historyLabel = NSTextField(labelWithString: "Temperature history · 24h")
         historyLabel.font = .systemFont(ofSize: 11, weight: .medium)
 
-        let stack = NSStackView(views: [header, graph, pointRow, historyLabel, historyGraph, controlRow, statusRow, quitRow])
+        let stack = NSStackView(views: [header, graph, pointRow, historyLabel, historyGraph, controlRow, loginRow, statusRow, quitRow])
         stack.orientation = .vertical
         stack.spacing = 14
         stack.translatesAutoresizingMaskIntoConstraints = false
@@ -320,6 +339,15 @@ final class MainViewController: NSViewController {
         outputValue.stringValue = "\(controller.outputPercentage)%"
         statusLabel.stringValue = controller.status
         toggle.state = controller.isEnabled ? .on : .off
+        toggle.isEnabled = !controller.isBusy
+        helperButton.title = controller.helperInstalled ? "Repair Helper" : "Install Helper"
+        helperButton.isEnabled = controller.canInstallHelper
+        copyReportButton.isEnabled = controller.canCopySupportReport
+        resetPointButton.isEnabled = !controller.isBusy
+        loginToggle.state = launchAtLoginRequested ? .on : .off
+        let fanText = controller.detectedFanCount == 1 ? "1 fan" : "\(controller.detectedFanCount) fans"
+        let helperText = controller.helperInstalled ? "helper installed" : "helper needed"
+        hardwareLabel.stringValue = "\(fanText) · \(helperText) · 0% = min"
         graph.points = controller.points
         graph.currentTemperature = controller.averageTemperature
         historyGraph.samples = controller.temperatureHistory
@@ -337,9 +365,35 @@ final class MainViewController: NSViewController {
         return stack
     }
 
+    private var launchAtLoginRequested: Bool {
+        let status = SMAppService.mainApp.status
+        return status == .enabled || status == .requiresApproval
+    }
+
     @objc private func toggleControl() { controller.setEnabled(toggle.state == .on) }
     @objc private func addPoint() { graph.addPoint() }
     @objc private func deletePoint() { graph.deleteSelectedPoint() }
+    @objc private func resetPoints() { controller.resetPoints() }
+    @objc private func installHelper() { controller.installHelper() }
+    @objc private func copySupportReport() { controller.copySupportReport() }
+    @objc private func toggleLaunchAtLogin() {
+        do {
+            if loginToggle.state == .on {
+                try SMAppService.mainApp.register()
+                controller.showStatus(
+                    SMAppService.mainApp.status == .requiresApproval
+                        ? "Approve launch at login in System Settings"
+                        : "Launch at login enabled"
+                )
+            } else {
+                try SMAppService.mainApp.unregister()
+                controller.showStatus("Launch at login disabled")
+            }
+        } catch {
+            loginToggle.state = launchAtLoginRequested ? .on : .off
+            controller.showStatus("Could not change launch at login")
+        }
+    }
     @objc private func quitApp() { NSApplication.shared.terminate(nil) }
 
     private func refreshPointButtons() {

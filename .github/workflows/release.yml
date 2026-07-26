@@ -13,7 +13,22 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  test:
+    strategy:
+      matrix:
+        os: [macos-15, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - run: swift run FanCurveCheck
+      - run: ./scripts/build.sh
+      - run: codesign --verify --deep --strict build/FanCurve.app
+      - run: build/FanCurve.app/Contents/Resources/FanCurveProbe --check-output | python3 -m json.tool >/dev/null
+
   release:
+    needs: test
     runs-on: codebuild-fan-curve-release-runner-${{ github.run_id }}-${{ github.run_attempt }}
     timeout-minutes: 15
     env:
@@ -46,15 +61,16 @@ jobs:
           mkdir -p "$source_dir/Vendor/Stats"
           git archive "$GITHUB_SHA" | tar -xf - -C "$source_dir"
           git -C Vendor/Stats archive HEAD | tar -xf - -C "$source_dir/Vendor/Stats"
-          python3 - "$source_dir/Resources/Info.plist" "$VERSION" "$GITHUB_RUN_NUMBER" <<'PY'
+          python3 - "$source_dir/Resources/Info.plist" "$VERSION" "$GITHUB_RUN_NUMBER" "$GITHUB_SHA" <<'PY'
           import plistlib
           import sys
 
-          path, version, build = sys.argv[1:]
+          path, version, build, revision = sys.argv[1:]
           with open(path, "rb") as source:
               info = plistlib.load(source)
           info["CFBundleShortVersionString"] = version
           info["CFBundleVersion"] = build
+          info["FanCurveSourceRevision"] = revision
           with open(path, "wb") as destination:
               plistlib.dump(info, destination)
           PY

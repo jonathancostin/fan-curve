@@ -12,11 +12,11 @@ fi
 
 script_dir=${0:A:h}
 project_dir=${script_dir:h}
-resource_dir="/Applications/FanCurve.app/Contents/Resources"
+resource_dir="$script_dir"
 [[ -x $resource_dir/FanCurveHelper && -f $resource_dir/com.jonathan.FanCurveHelper.plist ]] \
     || resource_dir="$project_dir/build/FanCurve.app/Contents/Resources"
 [[ -x $resource_dir/FanCurveHelper && -f $resource_dir/com.jonathan.FanCurveHelper.plist ]] \
-    || resource_dir="$script_dir"
+    || resource_dir="/Applications/FanCurve.app/Contents/Resources"
 helper_source="$resource_dir/FanCurveHelper"
 template_source="$resource_dir/com.jonathan.FanCurveHelper.plist"
 

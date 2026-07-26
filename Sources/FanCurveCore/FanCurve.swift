@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 public struct CurvePoint: Codable, Equatable, Sendable {
@@ -123,6 +124,64 @@ public struct ControlAcknowledgement: Codable, Sendable {
     }
 }
 
+public enum ControlPolicy {
+    public static func allowsControl(
+        state: ControlState?,
+        now: TimeInterval,
+        heartbeatTimeout: TimeInterval = 5,
+        thermalPressureIsSafe: Bool
+    ) -> Bool {
+        guard let state,
+              state.enabled,
+              (0...100).contains(state.percentage),
+              state.heartbeat.isFinite,
+              now.isFinite,
+              heartbeatTimeout.isFinite,
+              heartbeatTimeout > 0,
+              (0...heartbeatTimeout).contains(now - state.heartbeat),
+              thermalPressureIsSafe else { return false }
+        return true
+    }
+
+    public static func acknowledgementMatches(
+        _ acknowledgement: ControlAcknowledgement,
+        expectedPercentage: Int,
+        ownerUID: UInt32,
+        now: TimeInterval,
+        heartbeatTimeout: TimeInterval = 2.5
+    ) -> Bool {
+        acknowledgement.ownerUID == ownerUID
+            && acknowledgement.percentage == expectedPercentage
+            && acknowledgement.heartbeat.isFinite
+            && now.isFinite
+            && heartbeatTimeout.isFinite
+            && heartbeatTimeout > 0
+            && (0...heartbeatTimeout).contains(now - acknowledgement.heartbeat)
+    }
+}
+
+public enum HelperInstallation {
+    public static let helperPath = "/Library/PrivilegedHelperTools/com.jonathan.FanCurveHelper"
+    public static let launchDaemonPath = "/Library/LaunchDaemons/com.jonathan.FanCurveHelper.plist"
+
+    public static func isSecure(
+        helperPath: String = HelperInstallation.helperPath,
+        launchDaemonPath: String = HelperInstallation.launchDaemonPath
+    ) -> Bool {
+        secureRegularFile(helperPath, mustBeExecutable: true)
+            && secureRegularFile(launchDaemonPath, mustBeExecutable: false)
+    }
+
+    private static func secureRegularFile(_ path: String, mustBeExecutable: Bool) -> Bool {
+        var info = stat()
+        return lstat(path, &info) == 0
+            && (info.st_mode & S_IFMT) == S_IFREG
+            && info.st_uid == 0
+            && (info.st_mode & 0o022) == 0
+            && (!mustBeExecutable || (info.st_mode & 0o111) != 0)
+    }
+}
+
 public struct FanRange: Equatable, Sendable {
     public let id: Int
     public let minimumRPM: Int
@@ -150,5 +209,186 @@ public enum FanSmoothing {
         let difference = target - current
         guard abs(difference) > deadband else { return current }
         return current + min(riseLimit, max(-fallLimit, difference))
+    }
+}
+
+public struct CPUTemperatureSnapshot: Equatable, Sendable {
+    public let average: Double
+    public let sensorKeys: [String]
+
+    public init(average: Double, sensorKeys: [String]) {
+        self.average = average
+        self.sensorKeys = sensorKeys
+    }
+}
+
+public enum HardwareFanMode: String, Codable, Sendable {
+    case automatic
+    case forced
+    case system
+
+    public var isAutomatic: Bool {
+        self != .forced
+    }
+}
+
+public enum MacHardware {
+    private static let intelCoreKeys = (0...9).flatMap { ["TC\($0)c", "TC\($0)C"] }
+    private static let intelFallbackKeys = ["TCAD", "TC0D", "TC0E", "TC0F", "TC0H", "TC0P"]
+
+    private static let appleSiliconCPUKeys = [
+        "Te05", "Te09", "Te0H", "Te0L", "Te0P", "Te0S",
+        "Tf04", "Tf09", "Tf0A", "Tf0B", "Tf0D", "Tf0E",
+        "Tf44", "Tf49", "Tf4A", "Tf4B", "Tf4D", "Tf4E",
+        "Tp00", "Tp01", "Tp04", "Tp05", "Tp08", "Tp09",
+        "Tp0C", "Tp0D", "Tp0G", "Tp0H", "Tp0K", "Tp0L",
+        "Tp0O", "Tp0P", "Tp0R", "Tp0T", "Tp0U", "Tp0V",
+        "Tp0X", "Tp0Y", "Tp0a", "Tp0b", "Tp0d", "Tp0e",
+        "Tp0f", "Tp0g", "Tp0j", "Tp0m", "Tp0p", "Tp0u",
+        "Tp0y", "Tp1h", "Tp1l", "Tp1p", "Tp1t"
+    ]
+
+    public static func averageCPUTemperature(
+        availableKeys: Set<String>,
+        read: (String) -> Double?
+    ) -> Double? {
+        cpuTemperatureSnapshot(availableKeys: availableKeys, read: read)?.average
+    }
+
+    public static func cpuTemperatureSnapshot(
+        availableKeys: Set<String>,
+        read: (String) -> Double?
+    ) -> CPUTemperatureSnapshot? {
+        #if arch(arm64)
+        cpuTemperatureSnapshot(availableKeys: availableKeys, appleSilicon: true, read: read)
+        #else
+        cpuTemperatureSnapshot(availableKeys: availableKeys, appleSilicon: false, read: read)
+        #endif
+    }
+
+    public static func fanRanges(read: (String) -> Double?) -> [FanRange] {
+        guard let rawCount = read("FNum"),
+              rawCount.isFinite,
+              rawCount.rounded() == rawCount,
+              (1.0...8.0).contains(rawCount) else { return [] }
+
+        let count = Int(rawCount)
+        let fans = (0..<count).compactMap { id -> FanRange? in
+            guard let rawMinimum = read("F\(id)Mn"),
+                  let rawMaximum = read("F\(id)Mx"),
+                  rawMinimum.isFinite,
+                  rawMaximum.isFinite,
+                  rawMinimum >= 0,
+                  rawMaximum > rawMinimum,
+                  rawMaximum <= 20_000 else { return nil }
+            let minimum = Int(rawMinimum.rounded())
+            let maximum = Int(rawMaximum.rounded())
+            guard maximum > minimum else { return nil }
+            return FanRange(id: id, minimumRPM: minimum, maximumRPM: maximum)
+        }
+        return fans.count == count ? fans : []
+    }
+
+    public static func supportsFanControl(
+        _ fans: [FanRange],
+        readMode: (Int) -> HardwareFanMode?
+    ) -> Bool {
+        guard !fans.isEmpty else { return false }
+        #if arch(arm64)
+        return fans.allSatisfy { readMode($0.id) != nil }
+        #else
+        return fans.count <= 2 && fans.allSatisfy { readMode($0.id) != nil }
+        #endif
+    }
+
+    public static func appleFanMode(_ rawMode: Double?) -> HardwareFanMode? {
+        guard let rawMode,
+              rawMode.isFinite,
+              rawMode.rounded() == rawMode,
+              (0.0...3.0).contains(rawMode) else { return nil }
+        switch Int(rawMode) {
+        case 0: return .automatic
+        case 1: return .forced
+        case 3: return .system
+        default: return nil
+        }
+    }
+
+    public static func intelFanMode(_ rawMask: Double?, fanID: Int) -> HardwareFanMode? {
+        guard let rawMask,
+              rawMask.isFinite,
+              rawMask.rounded() == rawMask,
+              (0.0...3.0).contains(rawMask),
+              (0...1).contains(fanID) else { return nil }
+        return Int(rawMask) & (1 << fanID) == 0 ? .automatic : .forced
+    }
+
+    static func cpuTemperatureSnapshot(
+        availableKeys: Set<String>,
+        appleSilicon: Bool,
+        read: (String) -> Double?
+    ) -> CPUTemperatureSnapshot? {
+        let candidates = appleSilicon ? appleSiliconCPUKeys : intelCoreKeys
+        let readings = candidates.compactMap { key -> (String, Double)? in
+            guard availableKeys.contains(key),
+                  let value = read(key),
+                  value.isFinite,
+                  (0...110).contains(value) else { return nil }
+            return (key, value)
+        }
+        if !readings.isEmpty {
+            return CPUTemperatureSnapshot(
+                average: readings.map(\.1).reduce(0, +) / Double(readings.count),
+                sensorKeys: readings.map(\.0)
+            )
+        }
+        guard !appleSilicon else { return nil }
+        for key in intelFallbackKeys where availableKeys.contains(key) {
+            guard let value = read(key), value.isFinite, (0...110).contains(value) else { continue }
+            return CPUTemperatureSnapshot(average: value, sensorKeys: [key])
+        }
+        return nil
+    }
+}
+
+public struct WakeRecovery {
+    private var pollInFlight = false
+    private var resumeAfterWake = false
+    private var needsFreshWakePoll = false
+
+    public init() {}
+
+    public mutating func beginPoll() -> Bool? {
+        guard !pollInFlight else { return nil }
+        pollInFlight = true
+        let isWakePoll = needsFreshWakePoll
+        needsFreshWakePoll = false
+        return isWakePoll
+    }
+
+    public mutating func finishPoll(isWakePoll: Bool, hasTemperature: Bool) -> Bool {
+        pollInFlight = false
+        guard isWakePoll, resumeAfterWake else { return false }
+        guard hasTemperature else {
+            needsFreshWakePoll = true
+            return false
+        }
+        resumeAfterWake = false
+        return true
+    }
+
+    public mutating func prepareForSleep(wasEnabled: Bool) {
+        resumeAfterWake = wasEnabled
+        needsFreshWakePoll = false
+    }
+
+    public mutating func didWake() -> Bool {
+        needsFreshWakePoll = resumeAfterWake
+        return resumeAfterWake
+    }
+
+    public mutating func cancelResume() {
+        resumeAfterWake = false
+        needsFreshWakePoll = false
     }
 }

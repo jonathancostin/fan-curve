@@ -29,23 +29,23 @@ private func loadState(path: String, expectedUID: UInt32) -> ControlState? {
 }
 
 private func detectedFans() -> [FanRange] {
-    guard let rawCount = SMC.shared.getValue("FNum"), rawCount >= 1, rawCount <= 8 else { return [] }
-    let count = Int(rawCount)
-    let fans: [FanRange] = (0..<count).compactMap { id in
-        guard let rawMin = SMC.shared.getValue("F\(id)Mn"),
-              let rawMax = SMC.shared.getValue("F\(id)Mx") else { return nil }
-        let minimum = Int(rawMin.rounded())
-        let maximum = Int(rawMax.rounded())
-        guard minimum >= 0, maximum > minimum, maximum <= 20_000 else { return nil }
-        return FanRange(id: id, minimumRPM: minimum, maximumRPM: maximum)
-    }
-    return fans.count == count ? fans : []
+    MacHardware.fanRanges { SMC.shared.getValue($0) }
+}
+
+private func fanMode(_ id: Int) -> HardwareFanMode? {
+    #if arch(arm64)
+    return MacHardware.appleFanMode(SMC.shared.getValue(SMC.shared.fanModeKey(id)))
+    #else
+    return MacHardware.intelFanMode(SMC.shared.getValue("FS! "), fanID: id)
+    #endif
 }
 
 private func isAutomatic(_ fan: FanRange) -> Bool {
-    guard let rawMode = SMC.shared.getValue(SMC.shared.fanModeKey(fan.id)),
-          let mode = FanMode(rawValue: Int(rawMode)) else { return false }
-    return mode.isAutomatic
+    fanMode(fan.id)?.isAutomatic == true
+}
+
+private func isForced(_ fan: FanRange) -> Bool {
+    fanMode(fan.id) == .forced
 }
 
 private func restoreAutomatic(_ fans: [FanRange]) {
@@ -53,7 +53,9 @@ private func restoreAutomatic(_ fans: [FanRange]) {
         for fan in fans {
             SMC.shared.setFanMode(fan.id, mode: .automatic)
         }
+        #if arch(arm64)
         _ = SMC.shared.resetFanControl()
+        #endif
         usleep(250_000)
         if fans.allSatisfy(isAutomatic) { return }
     }
@@ -62,16 +64,17 @@ private func restoreAutomatic(_ fans: [FanRange]) {
 private func isApplied(_ percentage: Int, to fans: [FanRange]) -> Bool {
     fans.allSatisfy { fan in
         let target = fan.rpm(at: percentage)
-        let mode = SMC.shared.getValue(SMC.shared.fanModeKey(fan.id))
         let actualTarget = SMC.shared.getValue("F\(fan.id)Tg")
-        return mode == Double(FanMode.forced.rawValue) && actualTarget.map { abs($0 - Double(target)) <= 5 } == true
+        return isForced(fan) && actualTarget.map { abs($0 - Double(target)) <= 5 } == true
     }
 }
 
 private func apply(_ percentage: Int, to fans: [FanRange]) -> Bool {
     for _ in 0..<3 {
         for fan in fans {
-            SMC.shared.setFanMode(fan.id, mode: .forced)
+            if !isForced(fan) {
+                SMC.shared.setFanMode(fan.id, mode: .forced)
+            }
             SMC.shared.setFanSpeed(fan.id, speed: fan.rpm(at: percentage))
         }
         usleep(250_000)
@@ -132,7 +135,9 @@ guard lockFD >= 0, flock(lockFD, LOCK_EX | LOCK_NB) == 0 else { fail("controller
 defer { close(lockFD) }
 
 let fans = detectedFans()
-guard !fans.isEmpty else { fail("no valid fans found") }
+guard MacHardware.supportsFanControl(fans, readMode: fanMode) else {
+    fail("no supported fans found")
+}
 signal(SIGTERM, handleTermination)
 signal(SIGINT, handleTermination)
 
@@ -147,13 +152,13 @@ defer {
 
 while shouldStop == 0 {
     let state = loadState(path: statePath, expectedUID: ownerUID)
-    let heartbeatAge = state.map { Date().timeIntervalSince1970 - $0.heartbeat }
     let thermalState = ProcessInfo.processInfo.thermalState
-    let shouldControl = state?.enabled == true
-        && state.map { (0...100).contains($0.percentage) } == true
-        && heartbeatAge.map { $0 >= 0 && $0 <= heartbeatTimeout } == true
-        && thermalState != .serious
-        && thermalState != .critical
+    let shouldControl = ControlPolicy.allowsControl(
+        state: state,
+        now: Date().timeIntervalSince1970,
+        heartbeatTimeout: heartbeatTimeout,
+        thermalPressureIsSafe: thermalState != .serious && thermalState != .critical
+    )
 
     if shouldControl, let state {
         let percentage = state.percentage

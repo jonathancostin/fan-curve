@@ -7,7 +7,8 @@ let package = Package(
     platforms: [.macOS(.v13)],
     products: [
         .executable(name: "FanCurveApp", targets: ["FanCurveApp"]),
-        .executable(name: "FanCurveHelper", targets: ["FanCurveHelper"])
+        .executable(name: "FanCurveHelper", targets: ["FanCurveHelper"]),
+        .executable(name: "FanCurveProbe", targets: ["FanCurveProbe"])
     ],
     targets: [
         .target(
@@ -24,6 +25,10 @@ let package = Package(
         ),
         .executableTarget(
             name: "FanCurveHelper",
+            dependencies: ["FanCurveCore", "StatsSMC"]
+        ),
+        .executableTarget(
+            name: "FanCurveProbe",
             dependencies: ["FanCurveCore", "StatsSMC"]
         ),
         .executableTarget(

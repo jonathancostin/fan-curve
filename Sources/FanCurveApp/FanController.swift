@@ -7,11 +7,6 @@ import StatsSMC
 final class FanController: NSObject {
     static let shared = FanController()
 
-    private static let cpuKeys = [
-        "Tp00", "Tp04", "Tp08", "Tp0C", "Tp0G", "Tp0K",
-        "Tp0O", "Tp0R", "Tp0U", "Tp0X", "Tp0a", "Tp0d",
-        "Tp0g", "Tp0j", "Tp0m", "Tp0p", "Tp0u", "Tp0y"
-    ]
     private static let pointsKey = "curvePoints"
     private static let historyKey = "temperatureHistory"
 
@@ -19,7 +14,10 @@ final class FanController: NSObject {
     private(set) var averageTemperature: Double?
     private(set) var temperatureHistory: [TemperatureSample]
     private(set) var outputPercentage = 0
+    private(set) var detectedFanCount = 0
     private(set) var isEnabled = false
+    private(set) var isBusy = false
+    private(set) var helperInstalled = HelperInstallation.isSecure()
     private(set) var status = "Apple automatic control"
     var onUpdate: (() -> Void)?
 
@@ -27,7 +25,10 @@ final class FanController: NSObject {
     private let statePath = "/tmp/fancurve-\(getuid()).json"
     private let acknowledgementPath = "/var/run/fancurve-\(getuid()).ack"
     private var timer: Timer?
-    private var sleepObserver: NSObjectProtocol?
+    private var workspaceObservers: [NSObjectProtocol] = []
+    private var wakeRecovery = WakeRecovery()
+    private var availableSMCKeys: Set<String>?
+    private var fanRanges: [FanRange]?
 
     private override init() {
         if let data = UserDefaults.standard.data(forKey: Self.pointsKey),
@@ -42,11 +43,17 @@ final class FanController: NSObject {
         super.init()
 
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.poll() }
-        sleepObserver = NSWorkspace.shared.notificationCenter.addObserver(
+        let notifications = NSWorkspace.shared.notificationCenter
+        workspaceObservers.append(notifications.addObserver(
             forName: NSWorkspace.willSleepNotification,
             object: nil,
             queue: .main
-        ) { [weak self] _ in self?.setEnabled(false, reason: "Paused for sleep") }
+        ) { [weak self] _ in self?.prepareForSleep() })
+        workspaceObservers.append(notifications.addObserver(
+            forName: NSWorkspace.didWakeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in self?.didWake() })
         poll()
     }
 
@@ -61,7 +68,20 @@ final class FanController: NSObject {
         onUpdate?()
     }
 
+    func resetPoints() {
+        updatePoints(FanCurve.defaultPoints)
+        status = "Default curve restored"
+        onUpdate?()
+    }
+
+    func showStatus(_ message: String) {
+        status = message
+        onUpdate?()
+    }
+
     func setEnabled(_ enabled: Bool, reason: String? = nil) {
+        if !enabled { wakeRecovery.cancelResume() }
+        guard !isBusy else { return }
         guard enabled != isEnabled else { return }
         isEnabled = enabled
         if enabled {
@@ -71,7 +91,13 @@ final class FanController: NSObject {
                 onUpdate?()
                 return
             }
-            guard FileManager.default.isExecutableFile(atPath: installedHelperPath) else {
+            guard detectedFanCount > 0 else {
+                isEnabled = false
+                status = "No supported fans found"
+                onUpdate?()
+                return
+            }
+            guard HelperInstallation.isSecure() else {
                 isEnabled = false
                 status = "Install the background helper first"
                 onUpdate?()
@@ -87,30 +113,150 @@ final class FanController: NSObject {
         onUpdate?()
     }
 
+    var canInstallHelper: Bool {
+        bundledResource("install-helper.sh") != nil && !isBusy
+    }
+
+    var canCopySupportReport: Bool {
+        bundledResource("FanCurveProbe") != nil && !isBusy
+    }
+
+    func installHelper() {
+        guard let installer = bundledResource("install-helper.sh"), !isBusy else { return }
+        if isEnabled { setEnabled(false, reason: "Preparing helper install…") }
+        isBusy = true
+        status = helperInstalled ? "Repairing background helper…" : "Installing background helper…"
+        onUpdate?()
+
+        worker.async { [weak self] in
+            guard let self else { return }
+            for _ in 0..<20 where FileManager.default.fileExists(atPath: "/var/run/fancurve.active") {
+                usleep(250_000)
+            }
+            guard !FileManager.default.fileExists(atPath: "/var/run/fancurve.active") else {
+                return self.finishTask(status: "Apple control was not confirmed; helper unchanged")
+            }
+
+            let result = Self.run(installer, arguments: ["install"])
+            let installed = HelperInstallation.isSecure()
+            let status = result?.status == 0 && installed
+                ? "Background helper installed"
+                : result?.message ?? "Background helper install failed"
+            self.finishTask(status: status, helperInstalled: installed)
+        }
+    }
+
+    func copySupportReport() {
+        guard let probe = bundledResource("FanCurveProbe"), !isBusy else { return }
+        isBusy = true
+        status = "Collecting support report…"
+        onUpdate?()
+
+        worker.async { [weak self] in
+            guard let self else { return }
+            guard let result = Self.run(probe),
+                  result.status == 0,
+                  let data = result.output,
+                  (try? JSONSerialization.jsonObject(with: data)) != nil,
+                  let report = String(data: data, encoding: .utf8) else {
+                return self.finishTask(status: "Could not collect support report")
+            }
+            DispatchQueue.main.async {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(report, forType: .string)
+                self.isBusy = false
+                self.status = "Support report copied"
+                self.poll()
+                self.onUpdate?()
+            }
+        }
+    }
+
     func shutdown() {
         timer?.invalidate()
-        if let sleepObserver { NSWorkspace.shared.notificationCenter.removeObserver(sleepObserver) }
+        workspaceObservers.forEach(NSWorkspace.shared.notificationCenter.removeObserver)
         if isEnabled {
             isEnabled = false
             writeState(enabled: false)
         }
     }
 
-    private var installedHelperPath: String {
-        "/Library/PrivilegedHelperTools/com.jonathan.FanCurveHelper"
+    private func bundledResource(_ name: String) -> URL? {
+        guard let url = Bundle.main.resourceURL?.appendingPathComponent(name),
+              FileManager.default.isExecutableFile(atPath: url.path) else { return nil }
+        return url
+    }
+
+    private static func run(_ executable: URL, arguments: [String] = []) -> (
+        status: Int32,
+        output: Data?,
+        message: String?
+    )? {
+        let process = Process()
+        let output = Pipe()
+        process.executableURL = executable
+        process.arguments = arguments
+        process.standardOutput = output
+        process.standardError = output
+        do {
+            try process.run()
+            process.waitUntilExit()
+            let data = output.fileHandleForReading.readDataToEndOfFile()
+            let message = String(data: data, encoding: .utf8)?
+                .split(whereSeparator: \.isNewline)
+                .last
+                .map(String.init)
+            return (process.terminationStatus, data, message)
+        } catch {
+            return nil
+        }
+    }
+
+    private func finishTask(status: String, helperInstalled: Bool? = nil) {
+        DispatchQueue.main.async {
+            if let helperInstalled { self.helperInstalled = helperInstalled }
+            self.isBusy = false
+            self.status = status
+            self.poll()
+            self.onUpdate?()
+        }
     }
 
     private func poll() {
+        guard !isBusy else { return }
+        guard let isWakePoll = wakeRecovery.beginPoll() else { return }
         let expectedPercentage = outputPercentage
         let acknowledgementPath = acknowledgementPath
         worker.async { [weak self] in
-            let values = Self.cpuKeys.compactMap { SMC.shared.getValue($0) }.filter { (0...110).contains($0) }
-            let average = values.isEmpty ? nil : values.reduce(0, +) / Double(values.count)
-            let active = Self.controlIsActive(expectedPercentage: expectedPercentage, acknowledgementPath: acknowledgementPath)
-            DispatchQueue.main.async {
+            guard let self else { return }
+            let availableKeys = self.availableSMCKeys ?? Set(SMC.shared.getAllKeys())
+            if !availableKeys.isEmpty { self.availableSMCKeys = availableKeys }
+            let discoveredFans = self.fanRanges ?? MacHardware.fanRanges { SMC.shared.getValue($0) }
+            let fans = MacHardware.supportsFanControl(
+                discoveredFans,
+                readMode: Self.fanMode
+            ) ? discoveredFans : []
+            if !fans.isEmpty { self.fanRanges = fans }
+            let average = MacHardware.averageCPUTemperature(availableKeys: availableKeys) {
+                SMC.shared.getValue($0)
+            }
+            let active = Self.controlIsActive(
+                expectedPercentage: expectedPercentage,
+                acknowledgementPath: acknowledgementPath,
+                fans: fans
+            )
+            let helperInstalled = HelperInstallation.isSecure()
+            DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
+                let shouldResume = self.wakeRecovery.finishPoll(
+                    isWakePoll: isWakePoll,
+                    hasTemperature: average != nil
+                )
                 self.averageTemperature = average
+                self.detectedFanCount = fans.count
+                self.helperInstalled = helperInstalled
                 if let average { self.recordTemperature(average) }
+                if shouldResume { self.setEnabled(true) }
                 if average == nil, self.isEnabled {
                     self.setEnabled(false, reason: "No CPU temperature reading")
                 } else {
@@ -124,6 +270,22 @@ final class FanController: NSObject {
         }
     }
 
+    private func prepareForSleep() {
+        wakeRecovery.prepareForSleep(wasEnabled: isEnabled)
+        guard isEnabled else { return }
+        isEnabled = false
+        writeState(enabled: false)
+        status = "Paused for sleep"
+        onUpdate?()
+    }
+
+    private func didWake() {
+        guard wakeRecovery.didWake() else { return }
+        status = "Waiting for temperature after wake…"
+        poll()
+        onUpdate?()
+    }
+
     private func recordTemperature(_ temperature: Double) {
         let updated = TemperatureHistory.appending(temperature, at: Date().timeIntervalSince1970, to: temperatureHistory)
         guard updated != temperatureHistory else { return }
@@ -133,7 +295,11 @@ final class FanController: NSObject {
         }
     }
 
-    private static func controlIsActive(expectedPercentage: Int, acknowledgementPath: String) -> Bool {
+    private static func controlIsActive(
+        expectedPercentage: Int,
+        acknowledgementPath: String,
+        fans: [FanRange]
+    ) -> Bool {
         var info = stat()
         guard lstat(acknowledgementPath, &info) == 0,
               (info.st_mode & S_IFMT) == S_IFREG,
@@ -141,20 +307,31 @@ final class FanController: NSObject {
               (info.st_mode & 0o022) == 0,
               let data = FileManager.default.contents(atPath: acknowledgementPath),
               let acknowledgement = try? JSONDecoder().decode(ControlAcknowledgement.self, from: data),
-              acknowledgement.ownerUID == getuid(),
-              acknowledgement.percentage == expectedPercentage,
-              (0...2.5).contains(Date().timeIntervalSince1970 - acknowledgement.heartbeat),
-              let rawCount = SMC.shared.getValue("FNum"), rawCount >= 1, rawCount <= 8 else { return false }
+              ControlPolicy.acknowledgementMatches(
+                  acknowledgement,
+                  expectedPercentage: expectedPercentage,
+                  ownerUID: getuid(),
+                  now: Date().timeIntervalSince1970
+              ) else { return false }
 
-        return (0..<Int(rawCount)).allSatisfy { id in
-            guard let minimum = SMC.shared.getValue("F\(id)Mn"),
-                  let maximum = SMC.shared.getValue("F\(id)Mx"),
-                  let target = SMC.shared.getValue("F\(id)Tg") else { return false }
-            let expected = FanRange(id: id, minimumRPM: Int(minimum.rounded()), maximumRPM: Int(maximum.rounded()))
-                .rpm(at: expectedPercentage)
-            return SMC.shared.getValue(SMC.shared.fanModeKey(id)) == Double(FanMode.forced.rawValue)
-                && abs(target - Double(expected)) <= 5
+        guard !fans.isEmpty else { return false }
+        return fans.allSatisfy { fan in
+            guard let target = SMC.shared.getValue("F\(fan.id)Tg") else { return false }
+            return fanIsForced(fan.id)
+                && abs(target - Double(fan.rpm(at: expectedPercentage))) <= 5
         }
+    }
+
+    private static func fanIsForced(_ id: Int) -> Bool {
+        fanMode(id) == .forced
+    }
+
+    private static func fanMode(_ id: Int) -> HardwareFanMode? {
+        #if arch(arm64)
+        return MacHardware.appleFanMode(SMC.shared.getValue(SMC.shared.fanModeKey(id)))
+        #else
+        return MacHardware.intelFanMode(SMC.shared.getValue("FS! "), fanID: id)
+        #endif
     }
 
     private func refreshOutput() {
