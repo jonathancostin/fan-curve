@@ -243,6 +243,12 @@ precondition(FanSmoothing.next(current: 80, target: 20) == 78)
 precondition(FanSmoothing.next(current: 50, target: 53) == 53)
 precondition(FanSmoothing.next(current: 50, target: 52) == 50)
 
+precondition(ControlDisplayState(hasTemperature: false, fanCount: 2, isEnabled: false, isActive: false) == .problem)
+precondition(ControlDisplayState(hasTemperature: true, fanCount: 0, isEnabled: false, isActive: false) == .problem)
+precondition(ControlDisplayState(hasTemperature: true, fanCount: 2, isEnabled: false, isActive: false) == .automatic)
+precondition(ControlDisplayState(hasTemperature: true, fanCount: 2, isEnabled: true, isActive: false) == .problem)
+precondition(ControlDisplayState(hasTemperature: true, fanCount: 2, isEnabled: true, isActive: true) == .active)
+
 let history = TemperatureHistory.appending(
     70,
     at: 100_000,

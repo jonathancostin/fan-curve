@@ -20,6 +20,7 @@ final class FanController: NSObject {
     private(set) var supportLevel = DeviceSupportLevel.unsupported
     private(set) var fanTelemetry: [FanTelemetry] = []
     private(set) var isEnabled = false
+    private(set) var controlIsActive = false
     private(set) var isBusy = false
     private(set) var helperInstalled = HelperInstallation.isSecure()
     private(set) var resumeAfterLaunch: Bool
@@ -127,6 +128,7 @@ final class FanController: NSObject {
             controlConfirmation.start(at: ProcessInfo.processInfo.systemUptime)
             status = "Waiting for background helper…"
         } else {
+            controlIsActive = false
             writeState(enabled: false)
             status = reason ?? "Apple automatic control"
         }
@@ -329,6 +331,7 @@ final class FanController: NSObject {
                     fanControlSupported: fanControlSupported
                 )
                 self.fanTelemetry = fanTelemetry
+                self.controlIsActive = active
                 self.helperInstalled = helperInstalled
                 if let average { self.recordTemperature(average) }
                 if launchResumeWasPending && !shouldResumeAfterLaunch {

@@ -454,9 +454,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         popover.contentViewController = content
         statusItem.button?.target = self
         statusItem.button?.action = #selector(togglePopover)
-        statusItem.button?.toolTip = "Fan Curve"
         statusItem.button?.image = NSImage(systemSymbolName: "fanblades", accessibilityDescription: "Fan Curve")
-        statusItem.button?.imagePosition = .imageOnly
+        statusItem.button?.imagePosition = .imageLeading
         controller.onUpdate = { [weak self] in self?.refresh() }
         refresh()
     }
@@ -465,6 +464,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func refresh() {
         if popover.isShown { content.refresh() }
+        guard let button = statusItem.button else { return }
+        let temperature = controller.averageTemperature.map { Int($0.rounded()) }
+        let state = ControlDisplayState(
+            hasTemperature: temperature != nil,
+            fanCount: controller.detectedFanCount,
+            isEnabled: controller.isEnabled,
+            isActive: controller.controlIsActive
+        )
+        let title = "\(temperature.map { "\($0)°" } ?? "—") · \(state.rawValue)"
+        guard button.title != title else { return }
+        let label = "Fan Curve, \(temperature.map { "\($0) degrees Celsius" } ?? "temperature unavailable"), \(state.rawValue)"
+        button.title = title
+        button.toolTip = label
+        button.setAccessibilityLabel(label)
     }
 
     @objc private func togglePopover() {

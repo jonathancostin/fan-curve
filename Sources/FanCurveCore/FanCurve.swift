@@ -279,6 +279,22 @@ public enum FanSmoothing {
     }
 }
 
+public enum ControlDisplayState: String {
+    case active = "Active"
+    case automatic = "Automatic"
+    case problem = "Problem"
+
+    public init(hasTemperature: Bool, fanCount: Int, isEnabled: Bool, isActive: Bool) {
+        if !hasTemperature || fanCount == 0 {
+            self = .problem
+        } else if !isEnabled {
+            self = .automatic
+        } else {
+            self = isActive ? .active : .problem
+        }
+    }
+}
+
 public struct CPUTemperatureSnapshot: Equatable, Sendable {
     public let average: Double
     public let sensorKeys: [String]
