@@ -10,6 +10,7 @@ final class FanController: NSObject {
     private static let pointsKey = "curvePoints"
     private static let historyKey = "temperatureHistory"
     private static let confirmedUnverifiedModelKey = "confirmedUnverifiedModel"
+    private static let resumeAfterLaunchKey = "resumeAfterLaunch"
 
     private(set) var points: [CurvePoint]
     private(set) var averageTemperature: Double?
@@ -20,6 +21,7 @@ final class FanController: NSObject {
     private(set) var isEnabled = false
     private(set) var isBusy = false
     private(set) var helperInstalled = HelperInstallation.isSecure()
+    private(set) var resumeAfterLaunch: Bool
     private(set) var status = "Apple automatic control"
     var onUpdate: (() -> Void)?
 
@@ -31,10 +33,13 @@ final class FanController: NSObject {
     private var workspaceObservers: [NSObjectProtocol] = []
     private var wakeRecovery = WakeRecovery()
     private var controlConfirmation = ControlConfirmationDeadline()
+    private var launchRecovery: LaunchRecovery
     private var availableSMCKeys: Set<String>?
     private var fanRanges: [FanRange]?
 
     private override init() {
+        resumeAfterLaunch = UserDefaults.standard.bool(forKey: Self.resumeAfterLaunchKey)
+        launchRecovery = LaunchRecovery(requested: resumeAfterLaunch)
         if let data = UserDefaults.standard.data(forKey: Self.pointsKey),
            let saved = try? JSONDecoder().decode([CurvePoint].self, from: data),
            FanCurve.isValid(saved) {
@@ -87,6 +92,7 @@ final class FanController: NSObject {
         if !enabled {
             wakeRecovery.cancelResume()
             controlConfirmation.stop()
+            launchRecovery.cancelResume()
         }
         guard !isBusy else { return }
         guard enabled != isEnabled else { return }
@@ -133,6 +139,14 @@ final class FanController: NSObject {
 
     func confirmUnverifiedDevice() {
         UserDefaults.standard.set(deviceModel, forKey: Self.confirmedUnverifiedModelKey)
+    }
+
+    func setResumeAfterLaunch(_ enabled: Bool) {
+        resumeAfterLaunch = enabled
+        UserDefaults.standard.set(enabled, forKey: Self.resumeAfterLaunchKey)
+        if !enabled { launchRecovery.cancelResume() }
+        status = enabled ? "Resume after launch enabled" : "Resume after launch disabled"
+        onUpdate?()
     }
 
     var canInstallHelper: Bool {
@@ -260,6 +274,9 @@ final class FanController: NSObject {
         guard let isWakePoll = wakeRecovery.beginPoll() else { return }
         let expectedPercentage = outputPercentage
         let acknowledgementPath = acknowledgementPath
+        let bundledHelperPath = launchRecovery.isPending
+            ? bundledResource("FanCurveHelper")?.path
+            : nil
         worker.async { [weak self] in
             guard let self else { return }
             let availableKeys = self.availableSMCKeys ?? Set(SMC.shared.getAllKeys())
@@ -280,11 +297,20 @@ final class FanController: NSObject {
                 fans: fans
             )
             let helperInstalled = HelperInstallation.isSecure()
+            let helperIsCurrent = bundledHelperPath.map {
+                HelperInstallation.isCurrent(bundledHelperPath: $0)
+            } ?? false
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
                 let shouldResume = self.wakeRecovery.finishPoll(
                     isWakePoll: isWakePoll,
                     hasTemperature: average != nil
+                )
+                let launchResumeWasPending = self.launchRecovery.isPending
+                let shouldResumeAfterLaunch = self.launchRecovery.finishFirstPoll(
+                    hasTemperature: average != nil,
+                    hasSupportedFans: !fans.isEmpty,
+                    helperIsCurrent: helperIsCurrent
                 )
                 self.averageTemperature = average
                 self.detectedFanCount = fans.count
@@ -294,7 +320,10 @@ final class FanController: NSObject {
                 )
                 self.helperInstalled = helperInstalled
                 if let average { self.recordTemperature(average) }
-                if shouldResume { self.setEnabled(true) }
+                if launchResumeWasPending && !shouldResumeAfterLaunch {
+                    self.status = "Launch resume skipped; check temperature, fans, and helper"
+                }
+                if shouldResume || shouldResumeAfterLaunch { self.setEnabled(true) }
                 if average == nil, self.isEnabled {
                     self.setEnabled(false, reason: "No CPU temperature reading")
                 } else {
@@ -319,6 +348,7 @@ final class FanController: NSObject {
     }
 
     private func prepareForSleep() {
+        launchRecovery.cancelResume()
         wakeRecovery.prepareForSleep(wasEnabled: isEnabled)
         guard isEnabled else { return }
         isEnabled = false

@@ -265,4 +265,24 @@ precondition(wakeRecovery.finishPoll(isWakePoll: retryWakePoll, hasTemperature: 
 wakeRecovery.prepareForSleep(wasEnabled: false)
 precondition(!wakeRecovery.didWake())
 
+for (requested, temperature, fans, helper) in [
+    (false, true, true, true),
+    (true, false, true, true),
+    (true, true, false, true),
+    (true, true, true, false),
+    (true, true, true, true)
+] {
+    var launchRecovery = LaunchRecovery(requested: requested)
+    precondition(launchRecovery.finishFirstPoll(
+        hasTemperature: temperature,
+        hasSupportedFans: fans,
+        helperIsCurrent: helper
+    ) == (requested && temperature && fans && helper))
+    precondition(!launchRecovery.finishFirstPoll(
+        hasTemperature: true,
+        hasSupportedFans: true,
+        helperIsCurrent: true
+    ))
+}
+
 print("FanCurve checks passed")

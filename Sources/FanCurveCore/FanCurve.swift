@@ -226,6 +226,19 @@ public enum HelperInstallation {
             && secureRegularFile(launchDaemonPath, mustBeExecutable: false)
     }
 
+    public static func isCurrent(
+        bundledHelperPath: String,
+        helperPath: String = HelperInstallation.helperPath,
+        launchDaemonPath: String = HelperInstallation.launchDaemonPath
+    ) -> Bool {
+        guard isSecure(helperPath: helperPath, launchDaemonPath: launchDaemonPath),
+              let bundled = try? Data(contentsOf: URL(fileURLWithPath: bundledHelperPath), options: .mappedIfSafe),
+              let installed = try? Data(contentsOf: URL(fileURLWithPath: helperPath), options: .mappedIfSafe) else {
+            return false
+        }
+        return bundled == installed
+    }
+
     private static func secureRegularFile(_ path: String, mustBeExecutable: Bool) -> Bool {
         var info = stat()
         return lstat(path, &info) == 0
@@ -463,5 +476,27 @@ public struct WakeRecovery {
     public mutating func cancelResume() {
         resumeAfterWake = false
         needsFreshWakePoll = false
+    }
+}
+
+public struct LaunchRecovery {
+    public private(set) var isPending: Bool
+
+    public init(requested: Bool) {
+        isPending = requested
+    }
+
+    public mutating func finishFirstPoll(
+        hasTemperature: Bool,
+        hasSupportedFans: Bool,
+        helperIsCurrent: Bool
+    ) -> Bool {
+        guard isPending else { return false }
+        isPending = false
+        return hasTemperature && hasSupportedFans && helperIsCurrent
+    }
+
+    public mutating func cancelResume() {
+        isPending = false
     }
 }

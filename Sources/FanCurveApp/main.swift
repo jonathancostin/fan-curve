@@ -249,6 +249,7 @@ final class MainViewController: NSViewController {
     private let helperButton = NSButton(title: "Install Helper", target: nil, action: nil)
     private let copyReportButton = NSButton(title: "Copy Support Report", target: nil, action: nil)
     private let loginToggle = NSSwitch()
+    private let resumeToggle = NSSwitch()
     private let hardwareLabel = NSTextField(labelWithString: "Checking hardware…")
 
     init(controller: FanController) {
@@ -279,6 +280,7 @@ final class MainViewController: NSViewController {
         resetPointButton.action = #selector(resetPoints)
         toggle.setAccessibilityLabel("Use fan curve")
         loginToggle.setAccessibilityLabel("Launch at login")
+        resumeToggle.setAccessibilityLabel("Resume curve after launch")
         let pointRow = NSStackView(views: [pointHelp, NSView(), addPointButton, deletePointButton, resetPointButton])
 
         averageValue.font = .systemFont(ofSize: 30, weight: .semibold)
@@ -303,6 +305,12 @@ final class MainViewController: NSViewController {
         loginLabel.font = .systemFont(ofSize: 13, weight: .medium)
         let loginRow = NSStackView(views: [loginLabel, NSView(), loginToggle])
 
+        resumeToggle.target = self
+        resumeToggle.action = #selector(toggleResumeAfterLaunch)
+        let resumeLabel = NSTextField(labelWithString: "Resume curve after launch")
+        resumeLabel.font = .systemFont(ofSize: 13, weight: .medium)
+        let resumeRow = NSStackView(views: [resumeLabel, NSView(), resumeToggle])
+
         statusLabel.font = .systemFont(ofSize: 11)
         statusLabel.textColor = .secondaryLabelColor
         hardwareLabel.font = .systemFont(ofSize: 11)
@@ -319,7 +327,7 @@ final class MainViewController: NSViewController {
         let historyLabel = NSTextField(labelWithString: "Temperature history · 24h")
         historyLabel.font = .systemFont(ofSize: 11, weight: .medium)
 
-        let stack = NSStackView(views: [header, graph, pointRow, historyLabel, historyGraph, controlRow, loginRow, statusRow, quitRow])
+        let stack = NSStackView(views: [header, graph, pointRow, historyLabel, historyGraph, controlRow, loginRow, resumeRow, statusRow, quitRow])
         stack.orientation = .vertical
         stack.spacing = 14
         stack.translatesAutoresizingMaskIntoConstraints = false
@@ -348,6 +356,7 @@ final class MainViewController: NSViewController {
         copyReportButton.isEnabled = controller.canCopySupportReport
         resetPointButton.isEnabled = !controller.isBusy
         loginToggle.state = launchAtLoginRequested ? .on : .off
+        resumeToggle.state = controller.resumeAfterLaunch ? .on : .off
         let fanText = controller.detectedFanCount == 1 ? "1 fan" : "\(controller.detectedFanCount) fans"
         let helperText = helperNeedsUpdate
             ? "helper update needed"
@@ -397,6 +406,9 @@ final class MainViewController: NSViewController {
     @objc private func resetPoints() { controller.resetPoints() }
     @objc private func installHelper() { controller.installHelper() }
     @objc private func copySupportReport() { controller.copySupportReport() }
+    @objc private func toggleResumeAfterLaunch() {
+        controller.setResumeAfterLaunch(resumeToggle.state == .on)
+    }
     @objc private func toggleLaunchAtLogin() {
         do {
             if loginToggle.state == .on {
