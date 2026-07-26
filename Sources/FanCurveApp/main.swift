@@ -17,6 +17,7 @@ final class CurveView: NSView {
 
     var canAddPoint: Bool { FanCurve.addingPoint(to: points) != nil }
     var canDeletePoint: Bool { selectedIndex != nil && points.count > FanCurve.minimumPointCount }
+    var selectedPoint: CurvePoint? { selectedIndex.map { points[$0] } }
 
     override var acceptsFirstResponder: Bool { true }
     override var isFlipped: Bool { true }
@@ -81,26 +82,39 @@ final class CurveView: NSView {
             super.keyDown(with: event)
             return
         }
-        selectedIndex = index
-        var updated = points
+        if selectedIndex == nil {
+            selectedIndex = index
+            onSelectionChange?()
+        }
         switch event.keyCode {
-        case 123: updated[index].temperature -= 1
-        case 124: updated[index].temperature += 1
-        case 125: updated[index].percentage -= 1
-        case 126: updated[index].percentage += 1
+        case 123: updateSelected { $0.temperature -= 1 }
+        case 124: updateSelected { $0.temperature += 1 }
+        case 125: updateSelected { $0.percentage -= 1 }
+        case 126: updateSelected { $0.percentage += 1 }
         default: return super.keyDown(with: event)
         }
-        clampPoint(index, in: &updated)
-        points = updated
-        onChange?(updated)
+    }
+
+    func updateSelected(temperature: Double? = nil, percentage: Double? = nil) {
+        updateSelected {
+            if let temperature { $0.temperature = temperature }
+            if let percentage { $0.percentage = percentage }
+        }
     }
 
     private func updateSelected(at location: CGPoint) {
+        updateSelected {
+            $0.temperature = (30 + (location.x - plot.minX) / plot.width * 70).rounded()
+            $0.percentage = ((plot.maxY - location.y) / plot.height * 100).rounded()
+        }
+    }
+
+    private func updateSelected(_ change: (inout CurvePoint) -> Void) {
         guard let index = selectedIndex else { return }
         var updated = points
-        updated[index].temperature = (30 + (location.x - plot.minX) / plot.width * 70).rounded()
-        updated[index].percentage = ((plot.maxY - location.y) / plot.height * 100).rounded()
+        change(&updated[index])
         clampPoint(index, in: &updated)
+        guard FanCurve.isValid(updated) else { return }
         points = updated
         onChange?(updated)
     }
@@ -235,7 +249,7 @@ final class TemperatureHistoryView: NSView {
     }
 }
 
-final class MainViewController: NSViewController {
+final class MainViewController: NSViewController, NSTextFieldDelegate {
     private let controller: FanController
     private let averageValue = NSTextField(labelWithString: "—")
     private let outputValue = NSTextField(labelWithString: "0%")
@@ -247,6 +261,10 @@ final class MainViewController: NSViewController {
     private let addPointButton = NSButton(title: "Add Point", target: nil, action: nil)
     private let deletePointButton = NSButton(title: "Delete Point", target: nil, action: nil)
     private let resetPointButton = NSButton(title: "Reset", target: nil, action: nil)
+    private let temperatureField = NSTextField()
+    private let temperatureStepper = NSStepper()
+    private let percentageField = NSTextField()
+    private let percentageStepper = NSStepper()
     private let helperButton = NSButton(title: "Install Helper", target: nil, action: nil)
     private let copyReportButton = NSButton(title: "Copy Support Report", target: nil, action: nil)
     private let loginToggle = NSSwitch()
@@ -263,8 +281,11 @@ final class MainViewController: NSViewController {
     override func loadView() {
         view = NSView()
         graph.points = controller.points
-        graph.onChange = { [weak controller] in controller?.updatePoints($0) }
-        graph.onSelectionChange = { [weak self] in self?.refreshPointButtons() }
+        graph.onChange = { [weak self, weak controller] in
+            controller?.updatePoints($0)
+            self?.refreshPointControls()
+        }
+        graph.onSelectionChange = { [weak self] in self?.refreshPointControls() }
         graph.translatesAutoresizingMaskIntoConstraints = false
         graph.heightAnchor.constraint(equalToConstant: 255).isActive = true
         historyGraph.translatesAutoresizingMaskIntoConstraints = false
@@ -279,6 +300,40 @@ final class MainViewController: NSViewController {
         deletePointButton.action = #selector(deletePoint)
         resetPointButton.target = self
         resetPointButton.action = #selector(resetPoints)
+        let temperatureLabel = NSTextField(labelWithString: "Temp")
+        let percentageLabel = NSTextField(labelWithString: "Fan")
+        for field in [temperatureField, percentageField] {
+            field.alignment = .right
+            field.controlSize = .small
+            field.widthAnchor.constraint(equalToConstant: 44).isActive = true
+        }
+        temperatureField.delegate = self
+        temperatureField.target = self
+        temperatureField.action = #selector(changePointTemperature)
+        temperatureField.setAccessibilityLabel("Selected point temperature in degrees Celsius")
+        percentageField.delegate = self
+        percentageField.target = self
+        percentageField.action = #selector(changePointPercentage)
+        percentageField.setAccessibilityLabel("Selected point fan percentage")
+        temperatureStepper.minValue = 30
+        temperatureStepper.maxValue = 100
+        temperatureStepper.increment = 1
+        temperatureStepper.target = self
+        temperatureStepper.action = #selector(changePointTemperature)
+        temperatureStepper.setAccessibilityLabel("Selected point temperature in degrees Celsius")
+        percentageStepper.minValue = 0
+        percentageStepper.maxValue = 100
+        percentageStepper.increment = 1
+        percentageStepper.target = self
+        percentageStepper.action = #selector(changePointPercentage)
+        percentageStepper.setAccessibilityLabel("Selected point fan percentage")
+        let pointEditRow = NSStackView(views: [
+            temperatureLabel, temperatureField, temperatureStepper,
+            NSTextField(labelWithString: "°C"),
+            NSView(),
+            percentageLabel, percentageField, percentageStepper,
+            NSTextField(labelWithString: "%")
+        ])
         toggle.setAccessibilityLabel("Use fan curve")
         loginToggle.setAccessibilityLabel("Launch at login")
         resumeToggle.setAccessibilityLabel("Resume curve after launch")
@@ -330,7 +385,7 @@ final class MainViewController: NSViewController {
         let historyLabel = NSTextField(labelWithString: "Temperature history · 24h")
         historyLabel.font = .systemFont(ofSize: 11, weight: .medium)
 
-        let stack = NSStackView(views: [header, fansLabel, graph, pointRow, historyLabel, historyGraph, controlRow, loginRow, resumeRow, statusRow, quitRow])
+        let stack = NSStackView(views: [header, fansLabel, graph, pointEditRow, pointRow, historyLabel, historyGraph, controlRow, loginRow, resumeRow, statusRow, quitRow])
         stack.orientation = .vertical
         stack.spacing = 14
         stack.translatesAutoresizingMaskIntoConstraints = false
@@ -373,7 +428,7 @@ final class MainViewController: NSViewController {
         graph.points = controller.points
         graph.currentTemperature = controller.averageTemperature
         historyGraph.samples = controller.temperatureHistory
-        refreshPointButtons()
+        refreshPointControls()
     }
 
     private func metric(_ title: String, value: NSTextField, alignment: NSTextAlignment = .left) -> NSView {
@@ -412,11 +467,30 @@ final class MainViewController: NSViewController {
     @objc private func addPoint() { graph.addPoint() }
     @objc private func deletePoint() { graph.deleteSelectedPoint() }
     @objc private func resetPoints() { controller.resetPoints() }
+    @objc private func changePointTemperature(_ sender: NSControl) {
+        guard let value = pointValue(from: sender) else { return refreshPointControls() }
+        graph.updateSelected(temperature: value)
+    }
+    @objc private func changePointPercentage(_ sender: NSControl) {
+        guard let value = pointValue(from: sender) else { return refreshPointControls() }
+        graph.updateSelected(percentage: value)
+    }
     @objc private func installHelper() { controller.installHelper() }
     @objc private func copySupportReport() { controller.copySupportReport() }
     @objc private func toggleResumeAfterLaunch() {
         controller.setResumeAfterLaunch(resumeToggle.state == .on)
     }
+
+    func controlTextDidChange(_ notification: Notification) {
+        guard let field = notification.object as? NSTextField,
+              let value = pointValue(from: field) else { return }
+        if field === temperatureField {
+            graph.updateSelected(temperature: value)
+        } else if field === percentageField {
+            graph.updateSelected(percentage: value)
+        }
+    }
+
     @objc private func toggleLaunchAtLogin() {
         do {
             if loginToggle.state == .on {
@@ -437,9 +511,29 @@ final class MainViewController: NSViewController {
     }
     @objc private func quitApp() { NSApplication.shared.terminate(nil) }
 
-    private func refreshPointButtons() {
+    private func refreshPointControls() {
         addPointButton.isEnabled = graph.canAddPoint
         deletePointButton.isEnabled = graph.canDeletePoint
+        let enabled = graph.selectedPoint != nil
+        [temperatureField, temperatureStepper, percentageField, percentageStepper].forEach { $0.isEnabled = enabled }
+        guard let point = graph.selectedPoint else {
+            temperatureField.stringValue = ""
+            percentageField.stringValue = ""
+            return
+        }
+        if temperatureField.currentEditor() == nil {
+            temperatureField.stringValue = String(format: "%g", point.temperature)
+        }
+        temperatureStepper.doubleValue = point.temperature
+        if percentageField.currentEditor() == nil {
+            percentageField.stringValue = String(format: "%g", point.percentage)
+        }
+        percentageStepper.doubleValue = point.percentage
+    }
+
+    private func pointValue(from control: NSControl) -> Double? {
+        let value = control is NSTextField ? Double(control.stringValue) : control.doubleValue
+        return value?.isFinite == true ? value : nil
     }
 }
 
