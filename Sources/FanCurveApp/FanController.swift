@@ -18,6 +18,7 @@ final class FanController: NSObject {
     private(set) var outputPercentage = 0
     private(set) var detectedFanCount = 0
     private(set) var supportLevel = DeviceSupportLevel.unsupported
+    private(set) var fanTelemetry: [FanTelemetry] = []
     private(set) var isEnabled = false
     private(set) var isBusy = false
     private(set) var helperInstalled = HelperInstallation.isSecure()
@@ -282,9 +283,17 @@ final class FanController: NSObject {
             let availableKeys = self.availableSMCKeys ?? Set(SMC.shared.getAllKeys())
             if !availableKeys.isEmpty { self.availableSMCKeys = availableKeys }
             let discoveredFans = self.fanRanges ?? MacHardware.fanRanges { SMC.shared.getValue($0) }
+            let fanTelemetry = discoveredFans.map { fan in
+                FanTelemetry(
+                    id: fan.id,
+                    actualRPM: SMC.shared.getValue("F\(fan.id)Ac"),
+                    targetRPM: SMC.shared.getValue("F\(fan.id)Tg"),
+                    mode: Self.fanMode(fan.id)
+                )
+            }
             let fanControlSupported = MacHardware.supportsFanControl(
                 discoveredFans,
-                readMode: Self.fanMode
+                readMode: { id in fanTelemetry.first { $0.id == id }?.mode }
             )
             let fans = fanControlSupported ? discoveredFans : []
             if !fans.isEmpty { self.fanRanges = fans }
@@ -294,7 +303,8 @@ final class FanController: NSObject {
             let active = Self.controlIsActive(
                 expectedPercentage: expectedPercentage,
                 acknowledgementPath: acknowledgementPath,
-                fans: fans
+                fans: fans,
+                fanTelemetry: fanTelemetry
             )
             let helperInstalled = HelperInstallation.isSecure()
             let helperIsCurrent = bundledHelperPath.map {
@@ -318,6 +328,7 @@ final class FanController: NSObject {
                     model: self.deviceModel,
                     fanControlSupported: fanControlSupported
                 )
+                self.fanTelemetry = fanTelemetry
                 self.helperInstalled = helperInstalled
                 if let average { self.recordTemperature(average) }
                 if launchResumeWasPending && !shouldResumeAfterLaunch {
@@ -377,7 +388,8 @@ final class FanController: NSObject {
     private static func controlIsActive(
         expectedPercentage: Int,
         acknowledgementPath: String,
-        fans: [FanRange]
+        fans: [FanRange],
+        fanTelemetry: [FanTelemetry]
     ) -> Bool {
         var info = stat()
         guard lstat(acknowledgementPath, &info) == 0,
@@ -395,14 +407,11 @@ final class FanController: NSObject {
 
         guard !fans.isEmpty else { return false }
         return fans.allSatisfy { fan in
-            guard let target = SMC.shared.getValue("F\(fan.id)Tg") else { return false }
-            return fanIsForced(fan.id)
+            guard let telemetry = fanTelemetry.first(where: { $0.id == fan.id }),
+                  let target = telemetry.targetRPM else { return false }
+            return telemetry.mode == .forced
                 && abs(target - Double(fan.rpm(at: expectedPercentage))) <= 5
         }
-    }
-
-    private static func fanIsForced(_ id: Int) -> Bool {
-        fanMode(id) == .forced
     }
 
     private static func fanMode(_ id: Int) -> HardwareFanMode? {

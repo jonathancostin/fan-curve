@@ -239,6 +239,7 @@ final class MainViewController: NSViewController {
     private let controller: FanController
     private let averageValue = NSTextField(labelWithString: "—")
     private let outputValue = NSTextField(labelWithString: "0%")
+    private let fansLabel = NSTextField(wrappingLabelWithString: "Checking fans…")
     private let statusLabel = NSTextField(labelWithString: "Apple automatic control")
     private let toggle = NSSwitch()
     private let graph = CurveView()
@@ -290,6 +291,8 @@ final class MainViewController: NSViewController {
 
         let header = NSStackView(views: [metric("Average CPU", value: averageValue), metric("Fan output", value: outputValue, alignment: .right)])
         header.distribution = .fillEqually
+        fansLabel.font = .systemFont(ofSize: 11)
+        fansLabel.textColor = .secondaryLabelColor
 
         toggle.target = self
         toggle.action = #selector(toggleControl)
@@ -327,7 +330,7 @@ final class MainViewController: NSViewController {
         let historyLabel = NSTextField(labelWithString: "Temperature history · 24h")
         historyLabel.font = .systemFont(ofSize: 11, weight: .medium)
 
-        let stack = NSStackView(views: [header, graph, pointRow, historyLabel, historyGraph, controlRow, loginRow, resumeRow, statusRow, quitRow])
+        let stack = NSStackView(views: [header, fansLabel, graph, pointRow, historyLabel, historyGraph, controlRow, loginRow, resumeRow, statusRow, quitRow])
         stack.orientation = .vertical
         stack.spacing = 14
         stack.translatesAutoresizingMaskIntoConstraints = false
@@ -346,6 +349,11 @@ final class MainViewController: NSViewController {
         let helperNeedsUpdate = controller.helperNeedsUpdate
         averageValue.stringValue = controller.averageTemperature.map { String(format: "%.1f°C", $0) } ?? "—"
         outputValue.stringValue = "\(controller.outputPercentage)%"
+        fansLabel.stringValue = controller.fanTelemetry.isEmpty
+            ? "No fans detected"
+            : controller.fanTelemetry.map {
+                "Fan \($0.id + 1) · Live \($0.actualRPMText) · Target \($0.targetRPMText) · \($0.modeText)"
+            }.joined(separator: "\n")
         statusLabel.stringValue = controller.status
         toggle.state = controller.isEnabled ? .on : .off
         toggle.isEnabled = !controller.isBusy

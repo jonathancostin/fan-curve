@@ -305,6 +305,28 @@ public enum DeviceSupportLevel: String, Sendable {
     case unsupported = "Unsupported"
 }
 
+public struct FanTelemetry: Equatable, Sendable {
+    public let id: Int
+    public let actualRPM: Double?
+    public let targetRPM: Double?
+    public let mode: HardwareFanMode?
+
+    public init(id: Int, actualRPM: Double?, targetRPM: Double?, mode: HardwareFanMode?) {
+        self.id = id
+        self.actualRPM = actualRPM.flatMap { $0.isFinite ? $0 : nil }
+        self.targetRPM = targetRPM.flatMap { $0.isFinite ? $0 : nil }
+        self.mode = mode
+    }
+
+    public var actualRPMText: String { rpmText(actualRPM) }
+    public var targetRPMText: String { rpmText(targetRPM) }
+    public var modeText: String { mode.map { $0.isAutomatic ? "Automatic" : "Forced" } ?? "—" }
+
+    private func rpmText(_ value: Double?) -> String {
+        value.map { String(format: "%.0f RPM", $0) } ?? "—"
+    }
+}
+
 public enum MacHardware {
     private static let intelCoreKeys = (0...9).flatMap { ["TC\($0)c", "TC\($0)C"] }
     private static let intelFallbackKeys = ["TCAD", "TC0D", "TC0E", "TC0F", "TC0H", "TC0P"]

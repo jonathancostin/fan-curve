@@ -143,6 +143,13 @@ precondition(MacHardware.intelFanMode(1, fanID: 1) == .automatic)
 precondition(MacHardware.intelFanMode(2, fanID: 1) == .forced)
 precondition(MacHardware.intelFanMode(3, fanID: 2) == nil)
 
+let fanTelemetry = FanTelemetry(id: 0, actualRPM: 2_345.4, targetRPM: .nan, mode: .forced)
+precondition(
+    fanTelemetry.actualRPMText == "2345 RPM"
+        && fanTelemetry.targetRPMText == "—"
+        && fanTelemetry.modeText == "Forced"
+)
+
 let validState = ControlState(enabled: true, percentage: 50, heartbeat: 100, ownerUID: 501)
 precondition(ControlPolicy.allowsControl(
     state: validState,
