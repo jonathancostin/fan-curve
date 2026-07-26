@@ -210,6 +210,16 @@ precondition(!ControlPolicy.acknowledgementMatches(
     now: 102,
     heartbeatTimeout: .infinity
 ))
+
+var confirmation = ControlConfirmationDeadline()
+confirmation.start(at: 100)
+precondition(confirmation.failure(isConfirmed: false, at: 103.9) == nil)
+precondition(confirmation.failure(isConfirmed: true, at: 104) == .neverConfirmed)
+confirmation.start(at: 200)
+precondition(confirmation.failure(isConfirmed: true, at: 201) == nil)
+precondition(confirmation.failure(isConfirmed: false, at: 202) == nil)
+precondition(confirmation.failure(isConfirmed: true, at: 206) == .lost)
+
 precondition(!HelperInstallation.isSecure(
     helperPath: "/nonexistent/fancurve-helper",
     launchDaemonPath: "/nonexistent/fancurve-helper.plist"

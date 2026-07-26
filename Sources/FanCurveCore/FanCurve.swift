@@ -161,6 +161,49 @@ public enum ControlPolicy {
     }
 }
 
+public enum ControlConfirmationFailure: Equatable, Sendable {
+    case neverConfirmed
+    case lost
+}
+
+public struct ControlConfirmationDeadline: Sendable {
+    private var missingSince: TimeInterval?
+    private var hasConfirmed = false
+
+    public init() {}
+
+    public mutating func start(at time: TimeInterval) {
+        missingSince = time
+        hasConfirmed = false
+    }
+
+    public mutating func stop() {
+        missingSince = nil
+        hasConfirmed = false
+    }
+
+    public mutating func failure(
+        isConfirmed: Bool,
+        at time: TimeInterval,
+        timeout: TimeInterval = 4
+    ) -> ControlConfirmationFailure? {
+        guard time.isFinite, timeout.isFinite, timeout > 0 else {
+            return hasConfirmed ? .lost : .neverConfirmed
+        }
+        if let missingSince,
+           !missingSince.isFinite || time < missingSince || time - missingSince >= timeout {
+            return hasConfirmed ? .lost : .neverConfirmed
+        }
+        if isConfirmed {
+            missingSince = nil
+            hasConfirmed = true
+            return nil
+        }
+        if missingSince == nil { missingSince = time }
+        return nil
+    }
+}
+
 public enum HelperInstallation {
     public static let helperPath = "/Library/PrivilegedHelperTools/com.jonathan.FanCurveHelper"
     public static let launchDaemonPath = "/Library/LaunchDaemons/com.jonathan.FanCurveHelper.plist"

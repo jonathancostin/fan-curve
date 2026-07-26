@@ -27,6 +27,7 @@ final class FanController: NSObject {
     private var timer: Timer?
     private var workspaceObservers: [NSObjectProtocol] = []
     private var wakeRecovery = WakeRecovery()
+    private var controlConfirmation = ControlConfirmationDeadline()
     private var availableSMCKeys: Set<String>?
     private var fanRanges: [FanRange]?
 
@@ -80,7 +81,10 @@ final class FanController: NSObject {
     }
 
     func setEnabled(_ enabled: Bool, reason: String? = nil) {
-        if !enabled { wakeRecovery.cancelResume() }
+        if !enabled {
+            wakeRecovery.cancelResume()
+            controlConfirmation.stop()
+        }
         guard !isBusy else { return }
         guard enabled != isEnabled else { return }
         isEnabled = enabled
@@ -105,6 +109,7 @@ final class FanController: NSObject {
             }
             writeState(enabled: true)
             guard isEnabled else { onUpdate?(); return }
+            controlConfirmation.start(at: ProcessInfo.processInfo.systemUptime)
             status = "Waiting for background helper…"
         } else {
             writeState(enabled: false)
@@ -187,6 +192,7 @@ final class FanController: NSObject {
         workspaceObservers.forEach(NSWorkspace.shared.notificationCenter.removeObserver)
         if isEnabled {
             isEnabled = false
+            controlConfirmation.stop()
             writeState(enabled: false)
         }
     }
@@ -271,7 +277,17 @@ final class FanController: NSObject {
                     self.setEnabled(false, reason: "No CPU temperature reading")
                 } else {
                     if self.isEnabled {
-                        self.status = active ? "Curve active" : "Waiting for background helper…"
+                        switch self.controlConfirmation.failure(
+                            isConfirmed: active,
+                            at: ProcessInfo.processInfo.systemUptime
+                        ) {
+                        case .neverConfirmed:
+                            self.setEnabled(false, reason: "Background helper did not confirm control")
+                        case .lost:
+                            self.setEnabled(false, reason: "Background helper stopped confirming control")
+                        case nil:
+                            self.status = active ? "Curve active" : "Waiting for background helper…"
+                        }
                     }
                     self.refreshOutput()
                     self.onUpdate?()
@@ -284,6 +300,7 @@ final class FanController: NSObject {
         wakeRecovery.prepareForSleep(wasEnabled: isEnabled)
         guard isEnabled else { return }
         isEnabled = false
+        controlConfirmation.stop()
         writeState(enabled: false)
         status = "Paused for sleep"
         onUpdate?()
