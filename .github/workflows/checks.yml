@@ -1,0 +1,29 @@
+name: Checks
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Core checks (${{ matrix.architecture }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - architecture: x86_64
+            environment: linux
+          - architecture: arm64
+            environment: arm
+    runs-on:
+      - codebuild-fan-curve-release-runner-${{ github.run_id }}-${{ github.run_attempt }}
+      - image:custom-${{ matrix.environment }}-swift:6.1-jammy
+      - instance-size:small
+      - buildspec-override:true
+      - core-${{ matrix.architecture }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - run: swift --version
+      - run: swift run FanCurveCheck

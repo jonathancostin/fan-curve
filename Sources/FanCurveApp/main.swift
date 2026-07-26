@@ -1,6 +1,7 @@
 import AppKit
 import FanCurveCore
 import Foundation
+import ServiceManagement
 
 final class CurveView: NSView {
     var points = FanCurve.defaultPoints {
@@ -16,6 +17,7 @@ final class CurveView: NSView {
 
     var canAddPoint: Bool { FanCurve.addingPoint(to: points) != nil }
     var canDeletePoint: Bool { selectedIndex != nil && points.count > FanCurve.minimumPointCount }
+    var selectedPoint: CurvePoint? { selectedIndex.map { points[$0] } }
 
     override var acceptsFirstResponder: Bool { true }
     override var isFlipped: Bool { true }
@@ -80,26 +82,39 @@ final class CurveView: NSView {
             super.keyDown(with: event)
             return
         }
-        selectedIndex = index
-        var updated = points
+        if selectedIndex == nil {
+            selectedIndex = index
+            onSelectionChange?()
+        }
         switch event.keyCode {
-        case 123: updated[index].temperature -= 1
-        case 124: updated[index].temperature += 1
-        case 125: updated[index].percentage -= 1
-        case 126: updated[index].percentage += 1
+        case 123: updateSelected { $0.temperature -= 1 }
+        case 124: updateSelected { $0.temperature += 1 }
+        case 125: updateSelected { $0.percentage -= 1 }
+        case 126: updateSelected { $0.percentage += 1 }
         default: return super.keyDown(with: event)
         }
-        clampPoint(index, in: &updated)
-        points = updated
-        onChange?(updated)
+    }
+
+    func updateSelected(temperature: Double? = nil, percentage: Double? = nil) {
+        updateSelected {
+            if let temperature { $0.temperature = temperature }
+            if let percentage { $0.percentage = percentage }
+        }
     }
 
     private func updateSelected(at location: CGPoint) {
+        updateSelected {
+            $0.temperature = (30 + (location.x - plot.minX) / plot.width * 70).rounded()
+            $0.percentage = ((plot.maxY - location.y) / plot.height * 100).rounded()
+        }
+    }
+
+    private func updateSelected(_ change: (inout CurvePoint) -> Void) {
         guard let index = selectedIndex else { return }
         var updated = points
-        updated[index].temperature = (30 + (location.x - plot.minX) / plot.width * 70).rounded()
-        updated[index].percentage = ((plot.maxY - location.y) / plot.height * 100).rounded()
+        change(&updated[index])
         clampPoint(index, in: &updated)
+        guard FanCurve.isValid(updated) else { return }
         points = updated
         onChange?(updated)
     }
@@ -189,7 +204,14 @@ final class TemperatureHistoryView: NSView {
                 setAccessibilityValue("No samples yet")
                 return
             }
-            setAccessibilityValue(String(format: "Latest %.1f degrees Celsius; range %.1f to %.1f degrees Celsius", latest.temperature, minimum, maximum))
+            let fanOutput = latest.fanPercentage.map { "; fan output \($0) percent" } ?? ""
+            setAccessibilityValue(String(
+                format: "Latest %.1f degrees Celsius; range %.1f to %.1f degrees Celsius%@",
+                latest.temperature,
+                minimum,
+                maximum,
+                fanOutput
+            ))
         }
     }
     override var isFlipped: Bool { true }
@@ -200,14 +222,14 @@ final class TemperatureHistoryView: NSView {
         layer?.cornerRadius = 8
         layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
         setAccessibilityRole(.group)
-        setAccessibilityLabel("Average CPU temperature over the last 24 hours")
+        setAccessibilityLabel("Average CPU temperature and fan output over the last 24 hours")
     }
 
     required init?(coder: NSCoder) { nil }
 
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
-        let plot = bounds.insetBy(dx: 10, dy: 10)
+        let plot = bounds.insetBy(dx: 34, dy: 16)
         let attributes: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 9), .foregroundColor: NSColor.secondaryLabelColor]
         guard samples.count > 1 else {
             ("Collecting temperature history…" as NSString).draw(at: CGPoint(x: 12, y: bounds.midY - 6), withAttributes: attributes)
@@ -226,24 +248,55 @@ final class TemperatureHistoryView: NSView {
         }
         NSColor.systemOrange.setStroke()
         path.stroke()
-        ("110°C" as NSString).draw(at: CGPoint(x: plot.minX, y: plot.minY), withAttributes: attributes)
-        ("20°C" as NSString).draw(at: CGPoint(x: plot.minX, y: plot.maxY - 11), withAttributes: attributes)
-        ("24h ago" as NSString).draw(at: CGPoint(x: plot.minX + 32, y: plot.maxY - 11), withAttributes: attributes)
+
+        let fanPath = NSBezierPath()
+        fanPath.lineWidth = 2
+        fanPath.lineJoinStyle = .round
+        for (index, sample) in samples.compactMap({ sample in
+            sample.fanPercentage.map { (timestamp: sample.timestamp, percentage: $0) }
+        }).enumerated() {
+            let x = plot.minX + (sample.timestamp - start) / (end - start) * plot.width
+            let y = plot.maxY - min(1, max(0, CGFloat(sample.percentage) / 100)) * plot.height
+            index == 0 ? fanPath.move(to: CGPoint(x: x, y: y)) : fanPath.line(to: CGPoint(x: x, y: y))
+        }
+        NSColor.systemBlue.setStroke()
+        fanPath.stroke()
+
+        ("Temperature" as NSString).draw(at: CGPoint(x: plot.minX, y: 1), withAttributes: attributes.merging([.foregroundColor: NSColor.systemOrange]) { _, new in new })
+        ("Fan output" as NSString).draw(at: CGPoint(x: plot.minX + 78, y: 1), withAttributes: attributes.merging([.foregroundColor: NSColor.systemBlue]) { _, new in new })
+        ("110°C" as NSString).draw(at: CGPoint(x: 2, y: plot.minY), withAttributes: attributes)
+        ("20°C" as NSString).draw(at: CGPoint(x: 7, y: plot.maxY - 11), withAttributes: attributes)
+        ("100%" as NSString).draw(at: CGPoint(x: plot.maxX + 4, y: plot.minY), withAttributes: attributes)
+        ("0%" as NSString).draw(at: CGPoint(x: plot.maxX + 4, y: plot.maxY - 11), withAttributes: attributes)
+        ("24h ago" as NSString).draw(at: CGPoint(x: plot.minX, y: plot.maxY - 11), withAttributes: attributes)
         let now = "now" as NSString
         now.draw(at: CGPoint(x: plot.maxX - now.size(withAttributes: attributes).width, y: plot.maxY - 11), withAttributes: attributes)
     }
 }
 
-final class MainViewController: NSViewController {
+final class MainViewController: NSViewController, NSTextFieldDelegate {
     private let controller: FanController
     private let averageValue = NSTextField(labelWithString: "—")
     private let outputValue = NSTextField(labelWithString: "0%")
+    private let fansLabel = NSTextField(wrappingLabelWithString: "Checking fans…")
     private let statusLabel = NSTextField(labelWithString: "Apple automatic control")
     private let toggle = NSSwitch()
     private let graph = CurveView()
     private let historyGraph = TemperatureHistoryView()
     private let addPointButton = NSButton(title: "Add Point", target: nil, action: nil)
     private let deletePointButton = NSButton(title: "Delete Point", target: nil, action: nil)
+    private let resetPointButton = NSButton(title: "Reset", target: nil, action: nil)
+    private let temperatureField = NSTextField()
+    private let temperatureStepper = NSStepper()
+    private let percentageField = NSTextField()
+    private let percentageStepper = NSStepper()
+    private let copyCurveButton = NSButton(title: "Copy Curve", target: nil, action: nil)
+    private let pasteCurveButton = NSButton(title: "Paste Curve", target: nil, action: nil)
+    private let helperButton = NSButton(title: "Install Helper", target: nil, action: nil)
+    private let copyReportButton = NSButton(title: "Copy Support Report", target: nil, action: nil)
+    private let loginToggle = NSSwitch()
+    private let resumeToggle = NSSwitch()
+    private let hardwareLabel = NSTextField(labelWithString: "Checking hardware…")
 
     init(controller: FanController) {
         self.controller = controller
@@ -255,21 +308,71 @@ final class MainViewController: NSViewController {
     override func loadView() {
         view = NSView()
         graph.points = controller.points
-        graph.onChange = { [weak controller] in controller?.updatePoints($0) }
-        graph.onSelectionChange = { [weak self] in self?.refreshPointButtons() }
+        graph.onChange = { [weak self, weak controller] in
+            controller?.updatePoints($0)
+            self?.refreshPointControls()
+        }
+        graph.onSelectionChange = { [weak self] in self?.refreshPointControls() }
         graph.translatesAutoresizingMaskIntoConstraints = false
-        graph.heightAnchor.constraint(equalToConstant: 255).isActive = true
+        graph.heightAnchor.constraint(equalToConstant: 225).isActive = true
         historyGraph.translatesAutoresizingMaskIntoConstraints = false
         historyGraph.heightAnchor.constraint(equalToConstant: 90).isActive = true
 
-        let pointHelp = NSTextField(labelWithString: "Select and drag points.")
-        pointHelp.font = .systemFont(ofSize: 11)
-        pointHelp.textColor = .secondaryLabelColor
         addPointButton.target = self
         addPointButton.action = #selector(addPoint)
         deletePointButton.target = self
         deletePointButton.action = #selector(deletePoint)
-        let pointRow = NSStackView(views: [pointHelp, NSView(), addPointButton, deletePointButton])
+        resetPointButton.target = self
+        resetPointButton.action = #selector(resetPoints)
+        let temperatureLabel = NSTextField(labelWithString: "Temp")
+        let percentageLabel = NSTextField(labelWithString: "Fan")
+        for field in [temperatureField, percentageField] {
+            field.alignment = .right
+            field.controlSize = .small
+            field.widthAnchor.constraint(equalToConstant: 44).isActive = true
+        }
+        temperatureField.delegate = self
+        temperatureField.target = self
+        temperatureField.action = #selector(changePointTemperature)
+        temperatureField.setAccessibilityLabel("Selected point temperature in degrees Celsius")
+        percentageField.delegate = self
+        percentageField.target = self
+        percentageField.action = #selector(changePointPercentage)
+        percentageField.setAccessibilityLabel("Selected point fan percentage")
+        temperatureStepper.minValue = 30
+        temperatureStepper.maxValue = 100
+        temperatureStepper.increment = 1
+        temperatureStepper.target = self
+        temperatureStepper.action = #selector(changePointTemperature)
+        temperatureStepper.setAccessibilityLabel("Selected point temperature in degrees Celsius")
+        percentageStepper.minValue = 0
+        percentageStepper.maxValue = 100
+        percentageStepper.increment = 1
+        percentageStepper.target = self
+        percentageStepper.action = #selector(changePointPercentage)
+        percentageStepper.setAccessibilityLabel("Selected point fan percentage")
+        let pointEditRow = NSStackView(views: [
+            temperatureLabel, temperatureField, temperatureStepper,
+            NSTextField(labelWithString: "°C"),
+            NSView(),
+            percentageLabel, percentageField, percentageStepper,
+            NSTextField(labelWithString: "%")
+        ])
+        copyCurveButton.target = self
+        copyCurveButton.action = #selector(copyCurve)
+        pasteCurveButton.target = self
+        pasteCurveButton.action = #selector(pasteCurve)
+        [addPointButton, deletePointButton, resetPointButton, copyCurveButton, pasteCurveButton].forEach {
+            $0.controlSize = .small
+        }
+        toggle.setAccessibilityLabel("Use fan curve")
+        loginToggle.setAccessibilityLabel("Launch at login")
+        resumeToggle.setAccessibilityLabel("Resume curve after launch")
+        let pointRow = NSStackView(views: [
+            addPointButton, deletePointButton, resetPointButton,
+            NSView(),
+            copyCurveButton, pasteCurveButton
+        ])
 
         averageValue.font = .systemFont(ofSize: 30, weight: .semibold)
         outputValue.font = .systemFont(ofSize: 22, weight: .bold)
@@ -278,31 +381,48 @@ final class MainViewController: NSViewController {
 
         let header = NSStackView(views: [metric("Average CPU", value: averageValue), metric("Fan output", value: outputValue, alignment: .right)])
         header.distribution = .fillEqually
+        fansLabel.font = .systemFont(ofSize: 11)
+        fansLabel.textColor = .secondaryLabelColor
 
         toggle.target = self
         toggle.action = #selector(toggleControl)
         let toggleLabel = NSTextField(labelWithString: "Use fan curve")
         toggleLabel.font = .systemFont(ofSize: 13, weight: .medium)
-        let controlRow = NSStackView(views: [toggleLabel, NSView(), toggle])
+        helperButton.target = self
+        helperButton.action = #selector(installHelper)
+        let controlRow = NSStackView(views: [toggleLabel, NSView(), helperButton, toggle])
+
+        loginToggle.target = self
+        loginToggle.action = #selector(toggleLaunchAtLogin)
+        let loginLabel = NSTextField(labelWithString: "Launch at login")
+        loginLabel.font = .systemFont(ofSize: 13, weight: .medium)
+        let loginRow = NSStackView(views: [loginLabel, NSView(), loginToggle])
+
+        resumeToggle.target = self
+        resumeToggle.action = #selector(toggleResumeAfterLaunch)
+        let resumeLabel = NSTextField(labelWithString: "Resume curve after launch")
+        resumeLabel.font = .systemFont(ofSize: 13, weight: .medium)
+        let resumeRow = NSStackView(views: [resumeLabel, NSView(), resumeToggle])
 
         statusLabel.font = .systemFont(ofSize: 11)
         statusLabel.textColor = .secondaryLabelColor
-        let minimumLabel = NSTextField(labelWithString: "0% = minimum RPM")
-        minimumLabel.font = .systemFont(ofSize: 11)
-        minimumLabel.textColor = .secondaryLabelColor
-        minimumLabel.alignment = .right
-        let statusRow = NSStackView(views: [statusLabel, NSView(), minimumLabel])
+        hardwareLabel.font = .systemFont(ofSize: 11)
+        hardwareLabel.textColor = .secondaryLabelColor
+        hardwareLabel.alignment = .right
+        let statusRow = NSStackView(views: [statusLabel, NSView(), hardwareLabel])
 
+        copyReportButton.target = self
+        copyReportButton.action = #selector(copySupportReport)
         let quit = NSButton(title: "Quit", target: self, action: #selector(quitApp))
         quit.bezelStyle = .rounded
-        let quitRow = NSStackView(views: [NSView(), quit])
+        let quitRow = NSStackView(views: [copyReportButton, NSView(), quit])
 
-        let historyLabel = NSTextField(labelWithString: "Temperature history · 24h")
+        let historyLabel = NSTextField(labelWithString: "Temperature and fan output history · 24h")
         historyLabel.font = .systemFont(ofSize: 11, weight: .medium)
 
-        let stack = NSStackView(views: [header, graph, pointRow, historyLabel, historyGraph, controlRow, statusRow, quitRow])
+        let stack = NSStackView(views: [header, fansLabel, graph, pointEditRow, pointRow, historyLabel, historyGraph, controlRow, loginRow, resumeRow, statusRow, quitRow])
         stack.orientation = .vertical
-        stack.spacing = 14
+        stack.spacing = 10
         stack.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(stack)
         NSLayoutConstraint.activate([
@@ -316,14 +436,35 @@ final class MainViewController: NSViewController {
     }
 
     func refresh() {
+        let helperNeedsUpdate = controller.helperNeedsUpdate
         averageValue.stringValue = controller.averageTemperature.map { String(format: "%.1f°C", $0) } ?? "—"
         outputValue.stringValue = "\(controller.outputPercentage)%"
+        fansLabel.stringValue = controller.fanTelemetry.isEmpty
+            ? "No fans detected"
+            : controller.fanTelemetry.map {
+                "Fan \($0.id + 1) · Live \($0.actualRPMText) · Target \($0.targetRPMText) · \($0.modeText)"
+            }.joined(separator: "\n")
         statusLabel.stringValue = controller.status
         toggle.state = controller.isEnabled ? .on : .off
+        toggle.isEnabled = !controller.isBusy
+        helperButton.title = helperNeedsUpdate
+            ? "Update Helper"
+            : controller.helperInstalled ? "Repair Helper" : "Install Helper"
+        helperButton.isEnabled = controller.canInstallHelper
+        copyReportButton.isEnabled = controller.canCopySupportReport
+        resetPointButton.isEnabled = !controller.isBusy
+        pasteCurveButton.isEnabled = !controller.isBusy
+        loginToggle.state = launchAtLoginRequested ? .on : .off
+        resumeToggle.state = controller.resumeAfterLaunch ? .on : .off
+        let fanText = controller.detectedFanCount == 1 ? "1 fan" : "\(controller.detectedFanCount) fans"
+        let helperText = helperNeedsUpdate
+            ? "helper update needed"
+            : controller.helperInstalled ? "helper installed" : "helper needed"
+        hardwareLabel.stringValue = "\(controller.supportLevel.rawValue) · \(fanText) · \(helperText) · 0% = min"
         graph.points = controller.points
         graph.currentTemperature = controller.averageTemperature
         historyGraph.samples = controller.temperatureHistory
-        refreshPointButtons()
+        refreshPointControls()
     }
 
     private func metric(_ title: String, value: NSTextField, alignment: NSTextAlignment = .left) -> NSView {
@@ -337,14 +478,100 @@ final class MainViewController: NSViewController {
         return stack
     }
 
-    @objc private func toggleControl() { controller.setEnabled(toggle.state == .on) }
+    private var launchAtLoginRequested: Bool {
+        let status = SMAppService.mainApp.status
+        return status == .enabled || status == .requiresApproval
+    }
+
+    @objc private func toggleControl() {
+        guard toggle.state == .on, controller.needsSupportConfirmation else {
+            controller.setEnabled(toggle.state == .on)
+            return
+        }
+        let alert = NSAlert()
+        alert.messageText = "Fan control is not verified on this Mac"
+        alert.informativeText = "Fan Curve found known fan keys, but this Mac model has not passed the full device test. Enable it only while you can watch the fans and turn the curve off if they do not respond."
+        alert.addButton(withTitle: "Enable Fan Curve")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else {
+            refresh()
+            return
+        }
+        controller.confirmUnverifiedDevice()
+        controller.setEnabled(true)
+    }
     @objc private func addPoint() { graph.addPoint() }
     @objc private func deletePoint() { graph.deleteSelectedPoint() }
+    @objc private func resetPoints() { controller.resetPoints() }
+    @objc private func changePointTemperature(_ sender: NSControl) {
+        guard let value = pointValue(from: sender) else { return refreshPointControls() }
+        graph.updateSelected(temperature: value)
+    }
+    @objc private func changePointPercentage(_ sender: NSControl) {
+        guard let value = pointValue(from: sender) else { return refreshPointControls() }
+        graph.updateSelected(percentage: value)
+    }
+    @objc private func copyCurve() { controller.copyCurve() }
+    @objc private func pasteCurve() { controller.pasteCurve() }
+    @objc private func installHelper() { controller.installHelper() }
+    @objc private func copySupportReport() { controller.copySupportReport() }
+    @objc private func toggleResumeAfterLaunch() {
+        controller.setResumeAfterLaunch(resumeToggle.state == .on)
+    }
+
+    func controlTextDidChange(_ notification: Notification) {
+        guard let field = notification.object as? NSTextField,
+              let value = pointValue(from: field) else { return }
+        if field === temperatureField {
+            graph.updateSelected(temperature: value)
+        } else if field === percentageField {
+            graph.updateSelected(percentage: value)
+        }
+    }
+
+    @objc private func toggleLaunchAtLogin() {
+        do {
+            if loginToggle.state == .on {
+                try SMAppService.mainApp.register()
+                controller.showStatus(
+                    SMAppService.mainApp.status == .requiresApproval
+                        ? "Approve launch at login in System Settings"
+                        : "Launch at login enabled"
+                )
+            } else {
+                try SMAppService.mainApp.unregister()
+                controller.showStatus("Launch at login disabled")
+            }
+        } catch {
+            loginToggle.state = launchAtLoginRequested ? .on : .off
+            controller.showStatus("Could not change launch at login")
+        }
+    }
     @objc private func quitApp() { NSApplication.shared.terminate(nil) }
 
-    private func refreshPointButtons() {
+    private func refreshPointControls() {
         addPointButton.isEnabled = graph.canAddPoint
         deletePointButton.isEnabled = graph.canDeletePoint
+        let enabled = graph.selectedPoint != nil
+        [temperatureField, temperatureStepper, percentageField, percentageStepper].forEach { $0.isEnabled = enabled }
+        guard let point = graph.selectedPoint else {
+            temperatureField.stringValue = ""
+            percentageField.stringValue = ""
+            return
+        }
+        if temperatureField.currentEditor() == nil {
+            temperatureField.stringValue = String(format: "%g", point.temperature)
+        }
+        temperatureStepper.doubleValue = point.temperature
+        if percentageField.currentEditor() == nil {
+            percentageField.stringValue = String(format: "%g", point.percentage)
+        }
+        percentageStepper.doubleValue = point.percentage
+    }
+
+    private func pointValue(from control: NSControl) -> Double? {
+        let value = control is NSTextField ? Double(control.stringValue) : control.doubleValue
+        return value?.isFinite == true ? value : nil
     }
 }
 
@@ -359,9 +586,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         popover.contentViewController = content
         statusItem.button?.target = self
         statusItem.button?.action = #selector(togglePopover)
-        statusItem.button?.toolTip = "Fan Curve"
         statusItem.button?.image = NSImage(systemSymbolName: "fanblades", accessibilityDescription: "Fan Curve")
-        statusItem.button?.imagePosition = .imageOnly
+        statusItem.button?.imagePosition = .imageLeading
         controller.onUpdate = { [weak self] in self?.refresh() }
         refresh()
     }
@@ -370,6 +596,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func refresh() {
         if popover.isShown { content.refresh() }
+        guard let button = statusItem.button else { return }
+        let temperature = controller.averageTemperature.map { Int($0.rounded()) }
+        let state = ControlDisplayState(
+            hasTemperature: temperature != nil,
+            fanCount: controller.detectedFanCount,
+            isEnabled: controller.isEnabled,
+            isActive: controller.controlIsActive
+        )
+        let title = "\(temperature.map { "\($0)°" } ?? "—") · \(state.rawValue)"
+        guard button.title != title else { return }
+        let label = "Fan Curve, \(temperature.map { "\($0) degrees Celsius" } ?? "temperature unavailable"), \(state.rawValue)"
+        button.title = title
+        button.toolTip = label
+        button.setAccessibilityLabel(label)
     }
 
     @objc private func togglePopover() {

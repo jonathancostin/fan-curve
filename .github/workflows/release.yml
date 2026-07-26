@@ -13,7 +13,31 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  test:
+    name: Core checks (${{ matrix.architecture }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - architecture: x86_64
+            environment: linux
+          - architecture: arm64
+            environment: arm
+    runs-on:
+      - codebuild-fan-curve-release-runner-${{ github.run_id }}-${{ github.run_attempt }}
+      - image:custom-${{ matrix.environment }}-swift:6.1-jammy
+      - instance-size:small
+      - buildspec-override:true
+      - core-${{ matrix.architecture }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - run: swift --version
+      - run: swift run FanCurveCheck
+
   release:
+    needs: test
     runs-on: codebuild-fan-curve-release-runner-${{ github.run_id }}-${{ github.run_attempt }}
     timeout-minutes: 15
     env:
@@ -46,15 +70,16 @@ jobs:
           mkdir -p "$source_dir/Vendor/Stats"
           git archive "$GITHUB_SHA" | tar -xf - -C "$source_dir"
           git -C Vendor/Stats archive HEAD | tar -xf - -C "$source_dir/Vendor/Stats"
-          python3 - "$source_dir/Resources/Info.plist" "$VERSION" "$GITHUB_RUN_NUMBER" <<'PY'
+          python3 - "$source_dir/Resources/Info.plist" "$VERSION" "$GITHUB_RUN_NUMBER" "$GITHUB_SHA" <<'PY'
           import plistlib
           import sys
 
-          path, version, build = sys.argv[1:]
+          path, version, build, revision = sys.argv[1:]
           with open(path, "rb") as source:
               info = plistlib.load(source)
           info["CFBundleShortVersionString"] = version
           info["CFBundleVersion"] = build
+          info["FanCurveSourceRevision"] = revision
           with open(path, "wb") as destination:
               plistlib.dump(info, destination)
           PY
