@@ -27,6 +27,7 @@ jobs:
       - codebuild-fan-curve-release-runner-${{ github.run_id }}-${{ github.run_attempt }}
       - image:custom-${{ matrix.environment }}-swift:6.1-jammy
       - instance-size:small
+      - buildspec-override:true
       - core-${{ matrix.architecture }}
     steps:
       - uses: actions/checkout@v4
