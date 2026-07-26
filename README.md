@@ -1,24 +1,34 @@
 # Fan Curve
 
-A native macOS menu-bar app for Macs with fans. Add, delete, or drag points on a temperature-to-fan graph; the app displays average CPU temperature and applies the interpolated fan percentage across every detected fan.
+Fan Curve is a small macOS menu-bar app that adjusts fan speed from CPU temperature. It gives you a clear fan curve, live fan readings, and safe automatic recovery without a full hardware dashboard.
 
-`0%` means the detected minimum safe RPM and `100%` means the detected maximum. A one-time installer adds the root background helper required for fan writes. After that, enabling the curve does not prompt again. Quitting, disabling control, losing the heartbeat, sleeping, or reaching serious thermal pressure restores Apple automatic fan control.
+## What you can do
 
-The popover can install or repair the helper, restore the default curve, copy a private support report, and register Fan Curve to launch at login.
+- Set a fan curve by dragging points or entering exact values.
+- See CPU temperature, current fan speed, target speed, and fan mode.
+- Check recent temperature and fan output on the same chart.
+- Copy a curve as JSON and paste it back later.
+- Start the app at login.
+- Choose whether to resume your curve after the app starts.
+- Copy a private support report when a Mac needs testing.
 
-## Build
+`0%` uses each fan's safe minimum speed. `100%` uses its reported maximum speed.
 
-```sh
-./scripts/build.sh
-open build/FanCurve.app
-./scripts/install-helper.sh
-```
+## Safety
 
-Re-run the helper installer after replacing the app with a newer build. Remove it with `./scripts/install-helper.sh uninstall`.
+Fan Curve uses a small background helper for fan changes. You install it once with an administrator password; normal use does not ask again.
 
-## Homebrew
+The app returns control to macOS when you:
 
-The tap builds Fan Curve locally, so no Apple Developer membership is required:
+- turn the curve off;
+- quit the app;
+- put the Mac to sleep;
+- lose contact with the helper; or
+- reach serious system heat pressure.
+
+Fan targets always stay within the minimum and maximum speeds reported by the Mac. If temperature, fan, or helper data looks wrong, Fan Curve does not start control.
+
+## Install with Homebrew
 
 ```sh
 brew install --cask jonathancostin/tap/fan-curve
@@ -26,24 +36,63 @@ fan-curve-helper install
 open -a "Fan Curve"
 ```
 
-Update with `brew upgrade --cask fan-curve`, then run `fan-curve-helper install` again. Remove the privileged helper before uninstalling with `fan-curve-helper uninstall`.
+The helper command asks for an administrator password. After that, Fan Curve appears in the menu bar.
 
-The SMC implementation is reused from [Stats](https://github.com/exelban/stats) under its MIT license and pinned as a Git submodule.
+When Homebrew installs an update, update the helper too:
+
+```sh
+brew upgrade --cask fan-curve
+fan-curve-helper install
+```
+
+## First use
+
+1. Open Fan Curve from the Applications folder or with `open -a "Fan Curve"`.
+2. Check the support label and detected fan count.
+3. Leave the default curve in place for the first test.
+4. Turn on **Enable curve**.
+5. Check that the menu says **Active** and that each fan shows a live speed.
+6. Turn the curve off and make sure the menu returns to **Automatic**.
+
+On a Mac that has known sensor keys but has not passed device tests, the app asks for a one-time confirmation before it enables control.
+
+## Reading the menu
+
+- **Active** — the helper has confirmed the curve and the fans are in forced mode.
+- **Automatic** — macOS controls the fans.
+- **Problem** — Fan Curve cannot confirm safe control or is still waiting for automatic control to return.
+
+If you see **Problem**, turn the curve off. Use **Copy Support Report** if the problem remains.
 
 ## Mac support
 
-Fan Curve knows the CPU temperature keys used by Intel Macs and Apple M1 through M5 chips. Hardware checks reject missing or unsafe fan data before the helper writes any fan setting. Intel control currently supports one or two fans; Macs with more need device testing and a proven writer first.
+Fan Curve knows the CPU temperature keys used by Intel Macs and Apple M1 through M5 chips. It only works on Macs with physical fans.
 
-CI builds and checks both Intel and Apple-silicon versions. Real fan control has only been tested on an M5 Pro MacBook Pro so far; other Macs need device tests before they can move from known-key support to confirmed support.
+Real fan changes and recovery have been fully tested on the two-fan Apple M5 Pro MacBook Pro (`Mac17,9`). Other Macs may show **Known keys** until someone completes the device test list. Intel Macs with more than two fans are not supported.
 
-Run `swift run FanCurveProbe` for a read-only hardware report. See [Device support](SUPPORT.md) for the support levels and the physical test checklist.
+See [Device support](SUPPORT.md) for the current list and the safe test steps.
 
-## Checks
+## Remove Fan Curve
+
+Remove the helper before uninstalling the app:
 
 ```sh
-swift run FanCurveCheck
-./scripts/build.sh
-codesign --verify --deep --strict build/FanCurve.app
+fan-curve-helper uninstall
+brew uninstall --cask fan-curve
 ```
 
-See [Development](DEVELOPING.md) before changing hardware support, helper behavior, or the release flow.
+## Build from source
+
+```sh
+./scripts/build.sh
+open build/FanCurve.app
+./scripts/install-helper.sh
+```
+
+Run `./scripts/install-helper.sh uninstall` before deleting a source build. Developers should read [Development](DEVELOPING.md) before changing hardware support, helper behavior, or the release flow.
+
+## Privacy and source
+
+Fan Curve does not send fan or temperature data anywhere. Its support report leaves out serial numbers, account names, and hardware IDs.
+
+The SMC reader and writer come from [Stats](https://github.com/exelban/stats) under the MIT license and stay pinned as a Git submodule.

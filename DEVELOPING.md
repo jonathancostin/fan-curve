@@ -30,7 +30,7 @@ arch -x86_64 .build/out/Products/Release/FanCurveCheck
 git diff --check
 ```
 
-The cross-build needs Apple's Intel support tools. Pull requests and releases also run the checks and app build on native Apple-silicon and Intel macOS runners.
+The cross-build needs Apple's Intel support tools. Pull requests and releases run the portable core checks on AWS runners for both ARM and Intel. Run the full app build and signing checks on a Mac before merging.
 
 ## Release flow
 

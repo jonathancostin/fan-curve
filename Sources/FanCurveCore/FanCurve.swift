@@ -1,6 +1,12 @@
-import CryptoKit
-import Darwin
 import Foundation
+#if canImport(CryptoKit)
+import CryptoKit
+#endif
+#if canImport(Darwin)
+import Darwin
+#else
+import Glibc
+#endif
 
 public struct CurvePoint: Codable, Equatable, Sendable {
     public var temperature: Double
@@ -233,8 +239,12 @@ public enum HelperInstallation {
     public static let launchDaemonPath = "/Library/LaunchDaemons/com.jonathan.FanCurveHelper.plist"
 
     public static func sha256(_ path: String) -> String? {
+#if canImport(CryptoKit)
         guard let data = try? Data(contentsOf: URL(fileURLWithPath: path), options: .mappedIfSafe) else { return nil }
         return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+#else
+        return nil
+#endif
     }
 
     public static func requiresUpdate(bundledSHA256: String?, installedSHA256: String?) -> Bool {
@@ -312,7 +322,7 @@ public enum ControlDisplayState: String {
         if !hasTemperature || fanCount == 0 {
             self = .problem
         } else if !isEnabled {
-            self = .automatic
+            self = isActive ? .problem : .automatic
         } else {
             self = isActive ? .active : .problem
         }
@@ -384,15 +394,24 @@ public enum MacHardware {
     ]
 
     public static func modelIdentifier() -> String {
+#if canImport(Darwin)
         var size = 0
         guard sysctlbyname("hw.model", nil, &size, nil, 0) == 0, size > 0 else { return "unknown" }
         var value = [CChar](repeating: 0, count: size)
         guard sysctlbyname("hw.model", &value, &size, nil, 0) == 0 else { return "unknown" }
         return String(cString: value)
+#else
+        return "unknown"
+#endif
     }
 
-    public static func supportLevel(model: String, fanControlSupported: Bool) -> DeviceSupportLevel {
+    public static func supportLevel(
+        model: String,
+        fanCount: Int,
+        fanControlSupported: Bool
+    ) -> DeviceSupportLevel {
         guard fanControlSupported else { return .unsupported }
+        guard model != "Mac17,9" || fanCount == 2 else { return .unsupported }
         return model == "Mac17,9" ? .verified : .knownKeys
     }
 

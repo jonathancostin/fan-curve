@@ -14,18 +14,26 @@ concurrency:
 
 jobs:
   test:
+    name: Core checks (${{ matrix.architecture }})
     strategy:
+      fail-fast: false
       matrix:
-        os: [macos-15, macos-15-intel]
-    runs-on: ${{ matrix.os }}
+        include:
+          - architecture: x86_64
+            environment: linux
+          - architecture: arm64
+            environment: arm
+    runs-on:
+      - codebuild-fan-curve-release-runner-${{ github.run_id }}-${{ github.run_attempt }}
+      - image:custom-${{ matrix.environment }}-swift:6.1-jammy
+      - instance-size:small
+      - core-${{ matrix.architecture }}
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
+      - run: swift --version
       - run: swift run FanCurveCheck
-      - run: ./scripts/build.sh
-      - run: codesign --verify --deep --strict build/FanCurve.app
-      - run: build/FanCurve.app/Contents/Resources/FanCurveProbe --check-output | python3 -m json.tool >/dev/null
 
   release:
     needs: test

@@ -286,15 +286,18 @@ final class FanController: NSObject, UNUserNotificationCenterDelegate {
     )? {
         let process = Process()
         let output = Pipe()
+        let error = Pipe()
         process.executableURL = executable
         process.arguments = arguments
         process.standardOutput = output
-        process.standardError = output
+        process.standardError = error
         do {
             try process.run()
             process.waitUntilExit()
             let data = output.fileHandleForReading.readDataToEndOfFile()
-            let message = String(data: data, encoding: .utf8)?
+            let errorData = error.fileHandleForReading.readDataToEndOfFile()
+            let messageData = errorData.isEmpty ? data : errorData
+            let message = String(data: messageData, encoding: .utf8)?
                 .split(whereSeparator: \.isNewline)
                 .last
                 .map(String.init)
@@ -339,7 +342,12 @@ final class FanController: NSObject, UNUserNotificationCenterDelegate {
                 discoveredFans,
                 readMode: { id in fanTelemetry.first { $0.id == id }?.mode }
             )
-            let fans = fanControlSupported ? discoveredFans : []
+            let supportLevel = MacHardware.supportLevel(
+                model: self.deviceModel,
+                fanCount: discoveredFans.count,
+                fanControlSupported: fanControlSupported
+            )
+            let fans = supportLevel == .unsupported ? [] : discoveredFans
             if !fans.isEmpty { self.fanRanges = fans }
             let average = MacHardware.averageCPUTemperature(availableKeys: availableKeys) {
                 SMC.shared.getValue($0)
@@ -368,10 +376,7 @@ final class FanController: NSObject, UNUserNotificationCenterDelegate {
                 )
                 self.averageTemperature = average
                 self.detectedFanCount = fans.count
-                self.supportLevel = MacHardware.supportLevel(
-                    model: self.deviceModel,
-                    fanControlSupported: fanControlSupported
-                )
+                self.supportLevel = supportLevel
                 self.fanTelemetry = fanTelemetry
                 self.controlIsActive = active
                 self.helperInstalled = helperInstalled

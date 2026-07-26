@@ -126,9 +126,10 @@ precondition(!MacHardware.supportsFanControl(
     [FanRange(id: 0, minimumRPM: 1_000, maximumRPM: 8_000)],
     readMode: { _ in nil }
 ))
-precondition(MacHardware.supportLevel(model: "Mac17,9", fanControlSupported: true) == .verified)
-precondition(MacHardware.supportLevel(model: "Mac16,1", fanControlSupported: true) == .knownKeys)
-precondition(MacHardware.supportLevel(model: "Mac17,9", fanControlSupported: false) == .unsupported)
+precondition(MacHardware.supportLevel(model: "Mac17,9", fanCount: 2, fanControlSupported: true) == .verified)
+precondition(MacHardware.supportLevel(model: "Mac17,9", fanCount: 1, fanControlSupported: true) == .unsupported)
+precondition(MacHardware.supportLevel(model: "Mac16,1", fanCount: 1, fanControlSupported: true) == .knownKeys)
+precondition(MacHardware.supportLevel(model: "Mac17,9", fanCount: 2, fanControlSupported: false) == .unsupported)
 let invalidFanData: [[String: Double]] = [
     ["FNum": 0],
     ["FNum": 9],
@@ -268,6 +269,7 @@ precondition(FanSmoothing.next(current: 50, target: 52) == 50)
 precondition(ControlDisplayState(hasTemperature: false, fanCount: 2, isEnabled: false, isActive: false) == .problem)
 precondition(ControlDisplayState(hasTemperature: true, fanCount: 0, isEnabled: false, isActive: false) == .problem)
 precondition(ControlDisplayState(hasTemperature: true, fanCount: 2, isEnabled: false, isActive: false) == .automatic)
+precondition(ControlDisplayState(hasTemperature: true, fanCount: 2, isEnabled: false, isActive: true) == .problem)
 precondition(ControlDisplayState(hasTemperature: true, fanCount: 2, isEnabled: true, isActive: false) == .problem)
 precondition(ControlDisplayState(hasTemperature: true, fanCount: 2, isEnabled: true, isActive: true) == .active)
 
