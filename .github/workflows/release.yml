@@ -36,8 +36,18 @@ jobs:
       - run: swift --version
       - run: swift run FanCurveCheck
 
+  app-actions:
+    name: App user actions
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - run: swift build --product FanCurveApp
+      - run: swift run FanCurveAppCheck
+
   release:
-    needs: test
+    needs: [test, app-actions]
     runs-on: codebuild-fan-curve-release-runner-${{ github.run_id }}-${{ github.run_attempt }}
     timeout-minutes: 15
     env:
