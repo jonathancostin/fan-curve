@@ -347,7 +347,6 @@ final class FanController: NSObject, UNUserNotificationCenterDelegate {
                 self.fanTelemetry = fanTelemetry
                 self.controlIsActive = active
                 self.helperInstalled = helperInstalled
-                if let average { self.recordTemperature(average) }
                 if launchResumeWasPending && !shouldResumeAfterLaunch {
                     self.status = "Launch resume skipped; check temperature, fans, and helper"
                 }
@@ -381,6 +380,9 @@ final class FanController: NSObject, UNUserNotificationCenterDelegate {
                         }
                     }
                     self.refreshOutput()
+                    if let average {
+                        self.recordTemperature(average, fanPercentage: self.outputPercentage)
+                    }
                     self.onUpdate?()
                 }
             }
@@ -406,8 +408,13 @@ final class FanController: NSObject, UNUserNotificationCenterDelegate {
         onUpdate?()
     }
 
-    private func recordTemperature(_ temperature: Double) {
-        let updated = TemperatureHistory.appending(temperature, at: Date().timeIntervalSince1970, to: temperatureHistory)
+    private func recordTemperature(_ temperature: Double, fanPercentage: Int) {
+        let updated = TemperatureHistory.appending(
+            temperature,
+            fanPercentage: fanPercentage,
+            at: Date().timeIntervalSince1970,
+            to: temperatureHistory
+        )
         guard updated != temperatureHistory else { return }
         temperatureHistory = updated
         if let data = try? JSONEncoder().encode(updated) {

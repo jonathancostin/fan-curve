@@ -204,7 +204,14 @@ final class TemperatureHistoryView: NSView {
                 setAccessibilityValue("No samples yet")
                 return
             }
-            setAccessibilityValue(String(format: "Latest %.1f degrees Celsius; range %.1f to %.1f degrees Celsius", latest.temperature, minimum, maximum))
+            let fanOutput = latest.fanPercentage.map { "; fan output \($0) percent" } ?? ""
+            setAccessibilityValue(String(
+                format: "Latest %.1f degrees Celsius; range %.1f to %.1f degrees Celsius%@",
+                latest.temperature,
+                minimum,
+                maximum,
+                fanOutput
+            ))
         }
     }
     override var isFlipped: Bool { true }
@@ -215,14 +222,14 @@ final class TemperatureHistoryView: NSView {
         layer?.cornerRadius = 8
         layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
         setAccessibilityRole(.group)
-        setAccessibilityLabel("Average CPU temperature over the last 24 hours")
+        setAccessibilityLabel("Average CPU temperature and fan output over the last 24 hours")
     }
 
     required init?(coder: NSCoder) { nil }
 
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
-        let plot = bounds.insetBy(dx: 10, dy: 10)
+        let plot = bounds.insetBy(dx: 34, dy: 16)
         let attributes: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 9), .foregroundColor: NSColor.secondaryLabelColor]
         guard samples.count > 1 else {
             ("Collecting temperature history…" as NSString).draw(at: CGPoint(x: 12, y: bounds.midY - 6), withAttributes: attributes)
@@ -241,9 +248,27 @@ final class TemperatureHistoryView: NSView {
         }
         NSColor.systemOrange.setStroke()
         path.stroke()
-        ("110°C" as NSString).draw(at: CGPoint(x: plot.minX, y: plot.minY), withAttributes: attributes)
-        ("20°C" as NSString).draw(at: CGPoint(x: plot.minX, y: plot.maxY - 11), withAttributes: attributes)
-        ("24h ago" as NSString).draw(at: CGPoint(x: plot.minX + 32, y: plot.maxY - 11), withAttributes: attributes)
+
+        let fanPath = NSBezierPath()
+        fanPath.lineWidth = 2
+        fanPath.lineJoinStyle = .round
+        for (index, sample) in samples.compactMap({ sample in
+            sample.fanPercentage.map { (timestamp: sample.timestamp, percentage: $0) }
+        }).enumerated() {
+            let x = plot.minX + (sample.timestamp - start) / (end - start) * plot.width
+            let y = plot.maxY - min(1, max(0, CGFloat(sample.percentage) / 100)) * plot.height
+            index == 0 ? fanPath.move(to: CGPoint(x: x, y: y)) : fanPath.line(to: CGPoint(x: x, y: y))
+        }
+        NSColor.systemBlue.setStroke()
+        fanPath.stroke()
+
+        ("Temperature" as NSString).draw(at: CGPoint(x: plot.minX, y: 1), withAttributes: attributes.merging([.foregroundColor: NSColor.systemOrange]) { _, new in new })
+        ("Fan output" as NSString).draw(at: CGPoint(x: plot.minX + 78, y: 1), withAttributes: attributes.merging([.foregroundColor: NSColor.systemBlue]) { _, new in new })
+        ("110°C" as NSString).draw(at: CGPoint(x: 2, y: plot.minY), withAttributes: attributes)
+        ("20°C" as NSString).draw(at: CGPoint(x: 7, y: plot.maxY - 11), withAttributes: attributes)
+        ("100%" as NSString).draw(at: CGPoint(x: plot.maxX + 4, y: plot.minY), withAttributes: attributes)
+        ("0%" as NSString).draw(at: CGPoint(x: plot.maxX + 4, y: plot.maxY - 11), withAttributes: attributes)
+        ("24h ago" as NSString).draw(at: CGPoint(x: plot.minX, y: plot.maxY - 11), withAttributes: attributes)
         let now = "now" as NSString
         now.draw(at: CGPoint(x: plot.maxX - now.size(withAttributes: attributes).width, y: plot.maxY - 11), withAttributes: attributes)
     }
@@ -382,7 +407,7 @@ final class MainViewController: NSViewController, NSTextFieldDelegate {
         quit.bezelStyle = .rounded
         let quitRow = NSStackView(views: [copyReportButton, NSView(), quit])
 
-        let historyLabel = NSTextField(labelWithString: "Temperature history · 24h")
+        let historyLabel = NSTextField(labelWithString: "Temperature and fan output history · 24h")
         historyLabel.font = .systemFont(ofSize: 11, weight: .medium)
 
         let stack = NSStackView(views: [header, fansLabel, graph, pointEditRow, pointRow, historyLabel, historyGraph, controlRow, loginRow, resumeRow, statusRow, quitRow])

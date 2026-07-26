@@ -1,4 +1,5 @@
 import FanCurveCore
+import Foundation
 
 let curve = FanCurve(points: [
     CurvePoint(temperature: 40, percentage: 10),
@@ -261,16 +262,28 @@ precondition(ControlDisplayState(hasTemperature: true, fanCount: 2, isEnabled: t
 
 let history = TemperatureHistory.appending(
     70,
+    fanPercentage: 50,
     at: 100_000,
     to: [
-        TemperatureSample(timestamp: 10_000, temperature: 40),
-        TemperatureSample(timestamp: 99_950, temperature: 60)
+        TemperatureSample(timestamp: 10_000, temperature: 40, fanPercentage: 10),
+        TemperatureSample(timestamp: 99_950, temperature: 60, fanPercentage: 40)
     ],
     interval: 60,
     retention: 86_400
 )
-precondition(history == [TemperatureSample(timestamp: 99_950, temperature: 60)])
-precondition(TemperatureHistory.appending(70, at: 100_010, to: history).count == 2)
+precondition(history == [TemperatureSample(timestamp: 99_950, temperature: 60, fanPercentage: 40)])
+precondition(TemperatureHistory.appending(
+    70,
+    fanPercentage: 50,
+    at: 100_010,
+    to: history
+) == history + [TemperatureSample(timestamp: 100_010, temperature: 70, fanPercentage: 50)])
+
+let oldHistory = try! JSONDecoder().decode(
+    [TemperatureSample].self,
+    from: Data(#"[{"timestamp":100,"temperature":55}]"#.utf8)
+)
+precondition(oldHistory == [TemperatureSample(timestamp: 100, temperature: 55)])
 
 var wakeRecovery = WakeRecovery()
 let oldPoll = wakeRecovery.beginPoll()!
