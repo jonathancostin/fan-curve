@@ -45,8 +45,7 @@ final class FanController: NSObject, UNUserNotificationCenterDelegate {
         resumeAfterLaunch = UserDefaults.standard.bool(forKey: Self.resumeAfterLaunchKey)
         launchRecovery = LaunchRecovery(requested: resumeAfterLaunch)
         if let data = UserDefaults.standard.data(forKey: Self.pointsKey),
-           let saved = try? JSONDecoder().decode([CurvePoint].self, from: data),
-           FanCurve.isValid(saved) {
+           let saved = FanCurve.decodePoints(from: data) {
             points = saved
         } else {
             points = FanCurve.defaultPoints
@@ -86,6 +85,29 @@ final class FanController: NSObject, UNUserNotificationCenterDelegate {
         updatePoints(FanCurve.defaultPoints)
         status = "Default curve restored"
         onUpdate?()
+    }
+
+    func copyCurve() {
+        guard let data = try? JSONEncoder().encode(points),
+              let json = String(data: data, encoding: .utf8) else {
+            return showStatus("Could not copy curve")
+        }
+        NSPasteboard.general.clearContents()
+        showStatus(
+            NSPasteboard.general.setString(json, forType: .string)
+                ? "Curve copied"
+                : "Could not copy curve"
+        )
+    }
+
+    func pasteCurve() {
+        guard let json = NSPasteboard.general.string(forType: .string),
+              let data = json.data(using: .utf8),
+              let pasted = FanCurve.decodePoints(from: data) else {
+            return showStatus("Paste failed: invalid curve")
+        }
+        updatePoints(pasted)
+        showStatus("Curve pasted")
     }
 
     func showStatus(_ message: String) {

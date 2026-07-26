@@ -20,6 +20,17 @@ precondition(!FanCurve.isValid([
 ]))
 precondition(!FanCurve.isValid([CurvePoint(temperature: 40, percentage: 20)]))
 
+let sharedCurve = [
+    CurvePoint(temperature: 40, percentage: 10),
+    CurvePoint(temperature: 60, percentage: 50)
+]
+precondition(FanCurve.decodePoints(from: try! JSONEncoder().encode(sharedCurve)) == sharedCurve)
+precondition(FanCurve.decodePoints(from: Data("not json".utf8)) == nil)
+precondition(FanCurve.decodePoints(from: try! JSONEncoder().encode([
+    CurvePoint(temperature: 40, percentage: 80),
+    CurvePoint(temperature: 60, percentage: 20)
+])) == nil)
+
 let added = FanCurve.addingPoint(to: [
     CurvePoint(temperature: 40, percentage: 20),
     CurvePoint(temperature: 60, percentage: 40),

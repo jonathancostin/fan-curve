@@ -290,6 +290,8 @@ final class MainViewController: NSViewController, NSTextFieldDelegate {
     private let temperatureStepper = NSStepper()
     private let percentageField = NSTextField()
     private let percentageStepper = NSStepper()
+    private let copyCurveButton = NSButton(title: "Copy Curve", target: nil, action: nil)
+    private let pasteCurveButton = NSButton(title: "Paste Curve", target: nil, action: nil)
     private let helperButton = NSButton(title: "Install Helper", target: nil, action: nil)
     private let copyReportButton = NSButton(title: "Copy Support Report", target: nil, action: nil)
     private let loginToggle = NSSwitch()
@@ -359,10 +361,15 @@ final class MainViewController: NSViewController, NSTextFieldDelegate {
             percentageLabel, percentageField, percentageStepper,
             NSTextField(labelWithString: "%")
         ])
+        copyCurveButton.target = self
+        copyCurveButton.action = #selector(copyCurve)
+        pasteCurveButton.target = self
+        pasteCurveButton.action = #selector(pasteCurve)
         toggle.setAccessibilityLabel("Use fan curve")
         loginToggle.setAccessibilityLabel("Launch at login")
         resumeToggle.setAccessibilityLabel("Resume curve after launch")
         let pointRow = NSStackView(views: [pointHelp, NSView(), addPointButton, deletePointButton, resetPointButton])
+        let curveTransferRow = NSStackView(views: [copyCurveButton, pasteCurveButton, NSView()])
 
         averageValue.font = .systemFont(ofSize: 30, weight: .semibold)
         outputValue.font = .systemFont(ofSize: 22, weight: .bold)
@@ -410,7 +417,7 @@ final class MainViewController: NSViewController, NSTextFieldDelegate {
         let historyLabel = NSTextField(labelWithString: "Temperature and fan output history · 24h")
         historyLabel.font = .systemFont(ofSize: 11, weight: .medium)
 
-        let stack = NSStackView(views: [header, fansLabel, graph, pointEditRow, pointRow, historyLabel, historyGraph, controlRow, loginRow, resumeRow, statusRow, quitRow])
+        let stack = NSStackView(views: [header, fansLabel, graph, pointEditRow, pointRow, curveTransferRow, historyLabel, historyGraph, controlRow, loginRow, resumeRow, statusRow, quitRow])
         stack.orientation = .vertical
         stack.spacing = 14
         stack.translatesAutoresizingMaskIntoConstraints = false
@@ -443,6 +450,7 @@ final class MainViewController: NSViewController, NSTextFieldDelegate {
         helperButton.isEnabled = controller.canInstallHelper
         copyReportButton.isEnabled = controller.canCopySupportReport
         resetPointButton.isEnabled = !controller.isBusy
+        pasteCurveButton.isEnabled = !controller.isBusy
         loginToggle.state = launchAtLoginRequested ? .on : .off
         resumeToggle.state = controller.resumeAfterLaunch ? .on : .off
         let fanText = controller.detectedFanCount == 1 ? "1 fan" : "\(controller.detectedFanCount) fans"
@@ -500,6 +508,8 @@ final class MainViewController: NSViewController, NSTextFieldDelegate {
         guard let value = pointValue(from: sender) else { return refreshPointControls() }
         graph.updateSelected(percentage: value)
     }
+    @objc private func copyCurve() { controller.copyCurve() }
+    @objc private func pasteCurve() { controller.pasteCurve() }
     @objc private func installHelper() { controller.installHelper() }
     @objc private func copySupportReport() { controller.copySupportReport() }
     @objc private func toggleResumeAfterLaunch() {

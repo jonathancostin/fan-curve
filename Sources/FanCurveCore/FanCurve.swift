@@ -66,6 +66,12 @@ public struct FanCurve: Sendable {
         }
     }
 
+    public static func decodePoints(from data: Data) -> [CurvePoint]? {
+        guard let points = try? JSONDecoder().decode([CurvePoint].self, from: data),
+              isValid(points) else { return nil }
+        return points
+    }
+
     public static func addingPoint(to points: [CurvePoint]) -> [CurvePoint]? {
         guard isValid(points),
               let index = zip(points.indices, zip(points, points.dropFirst())).max(by: {
