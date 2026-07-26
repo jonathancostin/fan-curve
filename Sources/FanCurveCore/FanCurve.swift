@@ -1,3 +1,4 @@
+import CryptoKit
 import Darwin
 import Foundation
 
@@ -163,6 +164,16 @@ public enum ControlPolicy {
 public enum HelperInstallation {
     public static let helperPath = "/Library/PrivilegedHelperTools/com.jonathan.FanCurveHelper"
     public static let launchDaemonPath = "/Library/LaunchDaemons/com.jonathan.FanCurveHelper.plist"
+
+    public static func sha256(_ path: String) -> String? {
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path), options: .mappedIfSafe) else { return nil }
+        return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    public static func requiresUpdate(bundledSHA256: String?, installedSHA256: String?) -> Bool {
+        guard let bundledSHA256, let installedSHA256 else { return false }
+        return bundledSHA256 != installedSHA256
+    }
 
     public static func isSecure(
         helperPath: String = HelperInstallation.helperPath,

@@ -335,18 +335,23 @@ final class MainViewController: NSViewController {
     }
 
     func refresh() {
+        let helperNeedsUpdate = controller.helperNeedsUpdate
         averageValue.stringValue = controller.averageTemperature.map { String(format: "%.1f°C", $0) } ?? "—"
         outputValue.stringValue = "\(controller.outputPercentage)%"
         statusLabel.stringValue = controller.status
         toggle.state = controller.isEnabled ? .on : .off
         toggle.isEnabled = !controller.isBusy
-        helperButton.title = controller.helperInstalled ? "Repair Helper" : "Install Helper"
+        helperButton.title = helperNeedsUpdate
+            ? "Update Helper"
+            : controller.helperInstalled ? "Repair Helper" : "Install Helper"
         helperButton.isEnabled = controller.canInstallHelper
         copyReportButton.isEnabled = controller.canCopySupportReport
         resetPointButton.isEnabled = !controller.isBusy
         loginToggle.state = launchAtLoginRequested ? .on : .off
         let fanText = controller.detectedFanCount == 1 ? "1 fan" : "\(controller.detectedFanCount) fans"
-        let helperText = controller.helperInstalled ? "helper installed" : "helper needed"
+        let helperText = helperNeedsUpdate
+            ? "helper update needed"
+            : controller.helperInstalled ? "helper installed" : "helper needed"
         hardwareLabel.stringValue = "\(fanText) · \(helperText) · 0% = min"
         graph.points = controller.points
         graph.currentTemperature = controller.averageTemperature

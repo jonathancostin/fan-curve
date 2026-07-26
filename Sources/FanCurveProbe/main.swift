@@ -1,4 +1,3 @@
-import CryptoKit
 import Darwin
 import FanCurveCore
 import Foundation
@@ -54,11 +53,6 @@ private func finiteSMCValue(_ key: String) -> Double? {
     return value
 }
 
-private func sha256(_ url: URL) -> String? {
-    guard let data = try? Data(contentsOf: url, options: .mappedIfSafe) else { return nil }
-    return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
-}
-
 private func redirectStandardOutputToStandardError() -> Int32 {
     fflush(nil)
     let savedOutput = dup(STDOUT_FILENO)
@@ -84,11 +78,10 @@ let info = (try? Data(contentsOf: contentsURL.appendingPathComponent("Info.plist
 let shortVersion = info?["CFBundleShortVersionString"] as? String ?? "development"
 let buildVersion = info?["CFBundleVersion"] as? String
 let appVersion = buildVersion.map { "\(shortVersion) (\($0))" } ?? shortVersion
-let bundledHelperHash = sha256(contentsURL.appendingPathComponent("Resources/FanCurveHelper"))
-let installedHelperURL = URL(
-    fileURLWithPath: HelperInstallation.helperPath
+let bundledHelperHash = HelperInstallation.sha256(
+    contentsURL.appendingPathComponent("Resources/FanCurveHelper").path
 )
-let installedHelperHash = sha256(installedHelperURL)
+let installedHelperHash = HelperInstallation.sha256(HelperInstallation.helperPath)
 
 let savedOutput = redirectStandardOutputToStandardError()
 guard savedOutput >= 0 else {

@@ -214,6 +214,9 @@ precondition(!HelperInstallation.isSecure(
     helperPath: "/nonexistent/fancurve-helper",
     launchDaemonPath: "/nonexistent/fancurve-helper.plist"
 ))
+precondition(!HelperInstallation.requiresUpdate(bundledSHA256: nil, installedSHA256: "old"))
+precondition(!HelperInstallation.requiresUpdate(bundledSHA256: "same", installedSHA256: "same"))
+precondition(HelperInstallation.requiresUpdate(bundledSHA256: "new", installedSHA256: "old"))
 
 precondition(FanSmoothing.next(current: 20, target: 80) == 25)
 precondition(FanSmoothing.next(current: 80, target: 20) == 78)

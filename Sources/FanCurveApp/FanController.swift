@@ -117,6 +117,14 @@ final class FanController: NSObject {
         bundledResource("install-helper.sh") != nil && !isBusy
     }
 
+    var helperNeedsUpdate: Bool {
+        guard helperInstalled, let bundledHelper = bundledResource("FanCurveHelper") else { return false }
+        return HelperInstallation.requiresUpdate(
+            bundledSHA256: HelperInstallation.sha256(bundledHelper.path),
+            installedSHA256: HelperInstallation.sha256(HelperInstallation.helperPath)
+        )
+    }
+
     var canCopySupportReport: Bool {
         bundledResource("FanCurveProbe") != nil && !isBusy
     }
@@ -125,7 +133,9 @@ final class FanController: NSObject {
         guard let installer = bundledResource("install-helper.sh"), !isBusy else { return }
         if isEnabled { setEnabled(false, reason: "Preparing helper install…") }
         isBusy = true
-        status = helperInstalled ? "Repairing background helper…" : "Installing background helper…"
+        status = helperNeedsUpdate
+            ? "Updating background helper…"
+            : helperInstalled ? "Repairing background helper…" : "Installing background helper…"
         onUpdate?()
 
         worker.async { [weak self] in
