@@ -151,6 +151,12 @@ final class FanController: NSObject, UNUserNotificationCenterDelegate {
                 onUpdate?()
                 return
             }
+            guard !helperNeedsUpdate else {
+                isEnabled = false
+                status = "Update the background helper first"
+                onUpdate?()
+                return
+            }
             writeState(enabled: true)
             guard isEnabled else { onUpdate?(); return }
             controlConfirmation.start(at: ProcessInfo.processInfo.systemUptime)

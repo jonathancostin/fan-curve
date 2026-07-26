@@ -314,13 +314,10 @@ final class MainViewController: NSViewController, NSTextFieldDelegate {
         }
         graph.onSelectionChange = { [weak self] in self?.refreshPointControls() }
         graph.translatesAutoresizingMaskIntoConstraints = false
-        graph.heightAnchor.constraint(equalToConstant: 255).isActive = true
+        graph.heightAnchor.constraint(equalToConstant: 225).isActive = true
         historyGraph.translatesAutoresizingMaskIntoConstraints = false
         historyGraph.heightAnchor.constraint(equalToConstant: 90).isActive = true
 
-        let pointHelp = NSTextField(labelWithString: "Select and drag points.")
-        pointHelp.font = .systemFont(ofSize: 11)
-        pointHelp.textColor = .secondaryLabelColor
         addPointButton.target = self
         addPointButton.action = #selector(addPoint)
         deletePointButton.target = self
@@ -365,11 +362,17 @@ final class MainViewController: NSViewController, NSTextFieldDelegate {
         copyCurveButton.action = #selector(copyCurve)
         pasteCurveButton.target = self
         pasteCurveButton.action = #selector(pasteCurve)
+        [addPointButton, deletePointButton, resetPointButton, copyCurveButton, pasteCurveButton].forEach {
+            $0.controlSize = .small
+        }
         toggle.setAccessibilityLabel("Use fan curve")
         loginToggle.setAccessibilityLabel("Launch at login")
         resumeToggle.setAccessibilityLabel("Resume curve after launch")
-        let pointRow = NSStackView(views: [pointHelp, NSView(), addPointButton, deletePointButton, resetPointButton])
-        let curveTransferRow = NSStackView(views: [copyCurveButton, pasteCurveButton, NSView()])
+        let pointRow = NSStackView(views: [
+            addPointButton, deletePointButton, resetPointButton,
+            NSView(),
+            copyCurveButton, pasteCurveButton
+        ])
 
         averageValue.font = .systemFont(ofSize: 30, weight: .semibold)
         outputValue.font = .systemFont(ofSize: 22, weight: .bold)
@@ -417,9 +420,9 @@ final class MainViewController: NSViewController, NSTextFieldDelegate {
         let historyLabel = NSTextField(labelWithString: "Temperature and fan output history · 24h")
         historyLabel.font = .systemFont(ofSize: 11, weight: .medium)
 
-        let stack = NSStackView(views: [header, fansLabel, graph, pointEditRow, pointRow, curveTransferRow, historyLabel, historyGraph, controlRow, loginRow, resumeRow, statusRow, quitRow])
+        let stack = NSStackView(views: [header, fansLabel, graph, pointEditRow, pointRow, historyLabel, historyGraph, controlRow, loginRow, resumeRow, statusRow, quitRow])
         stack.orientation = .vertical
-        stack.spacing = 14
+        stack.spacing = 10
         stack.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(stack)
         NSLayoutConstraint.activate([
