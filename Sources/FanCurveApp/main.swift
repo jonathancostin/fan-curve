@@ -352,7 +352,7 @@ final class MainViewController: NSViewController {
         let helperText = helperNeedsUpdate
             ? "helper update needed"
             : controller.helperInstalled ? "helper installed" : "helper needed"
-        hardwareLabel.stringValue = "\(fanText) · \(helperText) · 0% = min"
+        hardwareLabel.stringValue = "\(controller.supportLevel.rawValue) · \(fanText) · \(helperText) · 0% = min"
         graph.points = controller.points
         graph.currentTemperature = controller.averageTemperature
         historyGraph.samples = controller.temperatureHistory
@@ -375,7 +375,23 @@ final class MainViewController: NSViewController {
         return status == .enabled || status == .requiresApproval
     }
 
-    @objc private func toggleControl() { controller.setEnabled(toggle.state == .on) }
+    @objc private func toggleControl() {
+        guard toggle.state == .on, controller.needsSupportConfirmation else {
+            controller.setEnabled(toggle.state == .on)
+            return
+        }
+        let alert = NSAlert()
+        alert.messageText = "Fan control is not verified on this Mac"
+        alert.informativeText = "Fan Curve found known fan keys, but this Mac model has not passed the full device test. Enable it only while you can watch the fans and turn the curve off if they do not respond."
+        alert.addButton(withTitle: "Enable Fan Curve")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else {
+            refresh()
+            return
+        }
+        controller.confirmUnverifiedDevice()
+        controller.setEnabled(true)
+    }
     @objc private func addPoint() { graph.addPoint() }
     @objc private func deletePoint() { graph.deleteSelectedPoint() }
     @objc private func resetPoints() { controller.resetPoints() }

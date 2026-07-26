@@ -114,7 +114,7 @@ let architecture = "x86_64"
 #endif
 
 let report = SupportReport(
-    model: systemValue("hw.model"),
+    model: MacHardware.modelIdentifier(),
     chip: systemValue("machdep.cpu.brand_string"),
     architecture: architecture,
     macOS: ProcessInfo.processInfo.operatingSystemVersionString,

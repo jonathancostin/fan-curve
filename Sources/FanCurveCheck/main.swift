@@ -114,6 +114,9 @@ precondition(!MacHardware.supportsFanControl(
     [FanRange(id: 0, minimumRPM: 1_000, maximumRPM: 8_000)],
     readMode: { _ in nil }
 ))
+precondition(MacHardware.supportLevel(model: "Mac17,9", fanControlSupported: true) == .verified)
+precondition(MacHardware.supportLevel(model: "Mac16,1", fanControlSupported: true) == .knownKeys)
+precondition(MacHardware.supportLevel(model: "Mac17,9", fanControlSupported: false) == .unsupported)
 let invalidFanData: [[String: Double]] = [
     ["FNum": 0],
     ["FNum": 9],

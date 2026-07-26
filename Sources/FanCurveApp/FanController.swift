@@ -9,12 +9,14 @@ final class FanController: NSObject {
 
     private static let pointsKey = "curvePoints"
     private static let historyKey = "temperatureHistory"
+    private static let confirmedUnverifiedModelKey = "confirmedUnverifiedModel"
 
     private(set) var points: [CurvePoint]
     private(set) var averageTemperature: Double?
     private(set) var temperatureHistory: [TemperatureSample]
     private(set) var outputPercentage = 0
     private(set) var detectedFanCount = 0
+    private(set) var supportLevel = DeviceSupportLevel.unsupported
     private(set) var isEnabled = false
     private(set) var isBusy = false
     private(set) var helperInstalled = HelperInstallation.isSecure()
@@ -22,6 +24,7 @@ final class FanController: NSObject {
     var onUpdate: (() -> Void)?
 
     private let worker = DispatchQueue(label: "com.jonathan.FanCurve.smc")
+    private let deviceModel = MacHardware.modelIdentifier()
     private let statePath = "/tmp/fancurve-\(getuid()).json"
     private let acknowledgementPath = "/var/run/fancurve-\(getuid()).ack"
     private var timer: Timer?
@@ -87,6 +90,11 @@ final class FanController: NSObject {
         }
         guard !isBusy else { return }
         guard enabled != isEnabled else { return }
+        guard !enabled || !needsSupportConfirmation else {
+            status = "Confirm this unverified Mac before enabling"
+            onUpdate?()
+            return
+        }
         isEnabled = enabled
         if enabled {
             guard averageTemperature != nil else {
@@ -116,6 +124,15 @@ final class FanController: NSObject {
             status = reason ?? "Apple automatic control"
         }
         onUpdate?()
+    }
+
+    var needsSupportConfirmation: Bool {
+        supportLevel == .knownKeys
+            && UserDefaults.standard.string(forKey: Self.confirmedUnverifiedModelKey) != deviceModel
+    }
+
+    func confirmUnverifiedDevice() {
+        UserDefaults.standard.set(deviceModel, forKey: Self.confirmedUnverifiedModelKey)
     }
 
     var canInstallHelper: Bool {
@@ -248,10 +265,11 @@ final class FanController: NSObject {
             let availableKeys = self.availableSMCKeys ?? Set(SMC.shared.getAllKeys())
             if !availableKeys.isEmpty { self.availableSMCKeys = availableKeys }
             let discoveredFans = self.fanRanges ?? MacHardware.fanRanges { SMC.shared.getValue($0) }
-            let fans = MacHardware.supportsFanControl(
+            let fanControlSupported = MacHardware.supportsFanControl(
                 discoveredFans,
                 readMode: Self.fanMode
-            ) ? discoveredFans : []
+            )
+            let fans = fanControlSupported ? discoveredFans : []
             if !fans.isEmpty { self.fanRanges = fans }
             let average = MacHardware.averageCPUTemperature(availableKeys: availableKeys) {
                 SMC.shared.getValue($0)
@@ -270,6 +288,10 @@ final class FanController: NSObject {
                 )
                 self.averageTemperature = average
                 self.detectedFanCount = fans.count
+                self.supportLevel = MacHardware.supportLevel(
+                    model: self.deviceModel,
+                    fanControlSupported: fanControlSupported
+                )
                 self.helperInstalled = helperInstalled
                 if let average { self.recordTemperature(average) }
                 if shouldResume { self.setEnabled(true) }

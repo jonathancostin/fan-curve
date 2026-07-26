@@ -286,6 +286,12 @@ public enum HardwareFanMode: String, Codable, Sendable {
     }
 }
 
+public enum DeviceSupportLevel: String, Sendable {
+    case verified = "Verified"
+    case knownKeys = "Known keys"
+    case unsupported = "Unsupported"
+}
+
 public enum MacHardware {
     private static let intelCoreKeys = (0...9).flatMap { ["TC\($0)c", "TC\($0)C"] }
     private static let intelFallbackKeys = ["TCAD", "TC0D", "TC0E", "TC0F", "TC0H", "TC0P"]
@@ -301,6 +307,19 @@ public enum MacHardware {
         "Tp0f", "Tp0g", "Tp0j", "Tp0m", "Tp0p", "Tp0u",
         "Tp0y", "Tp1h", "Tp1l", "Tp1p", "Tp1t"
     ]
+
+    public static func modelIdentifier() -> String {
+        var size = 0
+        guard sysctlbyname("hw.model", nil, &size, nil, 0) == 0, size > 0 else { return "unknown" }
+        var value = [CChar](repeating: 0, count: size)
+        guard sysctlbyname("hw.model", &value, &size, nil, 0) == 0 else { return "unknown" }
+        return String(cString: value)
+    }
+
+    public static func supportLevel(model: String, fanControlSupported: Bool) -> DeviceSupportLevel {
+        guard fanControlSupported else { return .unsupported }
+        return model == "Mac17,9" ? .verified : .knownKeys
+    }
 
     public static func averageCPUTemperature(
         availableKeys: Set<String>,
