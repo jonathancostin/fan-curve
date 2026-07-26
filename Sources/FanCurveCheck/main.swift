@@ -230,6 +230,16 @@ precondition(confirmation.failure(isConfirmed: true, at: 201) == nil)
 precondition(confirmation.failure(isConfirmed: false, at: 202) == nil)
 precondition(confirmation.failure(isConfirmed: true, at: 206) == .lost)
 
+var activeControlTransition = ActiveControlTransition()
+precondition([
+    activeControlTransition.shouldNotify(isEnabled: true, isActive: false),
+    activeControlTransition.shouldNotify(isEnabled: true, isActive: true),
+    activeControlTransition.shouldNotify(isEnabled: true, isActive: false),
+    activeControlTransition.shouldNotify(isEnabled: true, isActive: false),
+    activeControlTransition.shouldNotify(isEnabled: true, isActive: true),
+    activeControlTransition.shouldNotify(isEnabled: false, isActive: false)
+] == [false, false, true, false, false, false])
+
 precondition(!HelperInstallation.isSecure(
     helperPath: "/nonexistent/fancurve-helper",
     launchDaemonPath: "/nonexistent/fancurve-helper.plist"

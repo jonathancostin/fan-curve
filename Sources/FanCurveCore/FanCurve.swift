@@ -125,6 +125,17 @@ public struct ControlAcknowledgement: Codable, Sendable {
     }
 }
 
+public struct ActiveControlTransition: Sendable {
+    private var wasActive = false
+
+    public init() {}
+
+    public mutating func shouldNotify(isEnabled: Bool, isActive: Bool) -> Bool {
+        defer { wasActive = isEnabled && isActive }
+        return wasActive && isEnabled && !isActive
+    }
+}
+
 public enum ControlPolicy {
     public static func allowsControl(
         state: ControlState?,

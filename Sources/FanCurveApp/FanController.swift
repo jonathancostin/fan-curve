@@ -3,8 +3,9 @@ import Darwin
 import FanCurveCore
 import Foundation
 import StatsSMC
+import UserNotifications
 
-final class FanController: NSObject {
+final class FanController: NSObject, UNUserNotificationCenterDelegate {
     static let shared = FanController()
 
     private static let pointsKey = "curvePoints"
@@ -36,6 +37,7 @@ final class FanController: NSObject {
     private var wakeRecovery = WakeRecovery()
     private var controlConfirmation = ControlConfirmationDeadline()
     private var launchRecovery: LaunchRecovery
+    private var activeControlTransition = ActiveControlTransition()
     private var availableSMCKeys: Set<String>?
     private var fanRanges: [FanRange]?
 
@@ -52,6 +54,7 @@ final class FanController: NSObject {
         temperatureHistory = UserDefaults.standard.data(forKey: Self.historyKey)
             .flatMap { try? JSONDecoder().decode([TemperatureSample].self, from: $0) } ?? []
         super.init()
+        UNUserNotificationCenter.current().delegate = self
 
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.poll() }
         let notifications = NSWorkspace.shared.notificationCenter
@@ -104,6 +107,9 @@ final class FanController: NSObject {
             return
         }
         isEnabled = enabled
+        if !enabled {
+            _ = activeControlTransition.shouldNotify(isEnabled: false, isActive: false)
+        }
         if enabled {
             guard averageTemperature != nil else {
                 isEnabled = false
@@ -231,6 +237,14 @@ final class FanController: NSObject {
         }
     }
 
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        willPresent notification: UNNotification,
+        withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+    ) {
+        completionHandler([.banner, .sound])
+    }
+
     private func bundledResource(_ name: String) -> URL? {
         guard let url = Bundle.main.resourceURL?.appendingPathComponent(name),
               FileManager.default.isExecutableFile(atPath: url.path) else { return nil }
@@ -338,7 +352,16 @@ final class FanController: NSObject {
                     self.status = "Launch resume skipped; check temperature, fans, and helper"
                 }
                 if shouldResume || shouldResumeAfterLaunch { self.setEnabled(true) }
+                if active {
+                    _ = self.activeControlTransition.shouldNotify(
+                        isEnabled: self.isEnabled,
+                        isActive: true
+                    )
+                }
                 if average == nil, self.isEnabled {
+                    if self.activeControlTransition.shouldNotify(isEnabled: true, isActive: false) {
+                        self.notifyControlFailure("No CPU temperature reading")
+                    }
                     self.setEnabled(false, reason: "No CPU temperature reading")
                 } else {
                     if self.isEnabled {
@@ -349,6 +372,9 @@ final class FanController: NSObject {
                         case .neverConfirmed:
                             self.setEnabled(false, reason: "Background helper did not confirm control")
                         case .lost:
+                            if self.activeControlTransition.shouldNotify(isEnabled: true, isActive: false) {
+                                self.notifyControlFailure("Background helper stopped confirming fan control")
+                            }
                             self.setEnabled(false, reason: "Background helper stopped confirming control")
                         case nil:
                             self.status = active ? "Curve active" : "Waiting for background helper…"
@@ -367,6 +393,7 @@ final class FanController: NSObject {
         guard isEnabled else { return }
         isEnabled = false
         controlConfirmation.stop()
+        _ = activeControlTransition.shouldNotify(isEnabled: false, isActive: false)
         writeState(enabled: false)
         status = "Paused for sleep"
         onUpdate?()
@@ -385,6 +412,22 @@ final class FanController: NSObject {
         temperatureHistory = updated
         if let data = try? JSONEncoder().encode(updated) {
             UserDefaults.standard.set(data, forKey: Self.historyKey)
+        }
+    }
+
+    private func notifyControlFailure(_ reason: String) {
+        let content = UNMutableNotificationContent()
+        content.title = "Fan Curve lost active control"
+        content.body = "\(reason). Apple automatic control should take over."
+        content.sound = .default
+        let center = UNUserNotificationCenter.current()
+        center.requestAuthorization(options: [.alert, .sound]) { granted, _ in
+            guard granted else { return }
+            center.add(UNNotificationRequest(
+                identifier: UUID().uuidString,
+                content: content,
+                trigger: nil
+            ))
         }
     }
 
