@@ -265,81 +265,93 @@ package final class CurveView: NSView {
     }
 }
 
-final class TemperatureHistoryView: NSView {
+package final class TemperatureHistoryView: NSView {
     var samples: [TemperatureSample] = [] {
-        didSet {
-            needsDisplay = true
-            guard let latest = samples.last, let minimum = samples.map(\.temperature).min(), let maximum = samples.map(\.temperature).max() else {
-                setAccessibilityValue("No samples yet")
-                return
-            }
-            let fanOutput = latest.fanPercentage.map { "; fan output \($0) percent" } ?? ""
-            setAccessibilityValue(String(
-                format: "Latest %.1f degrees Celsius; range %.1f to %.1f degrees Celsius%@",
-                latest.temperature,
-                minimum,
-                maximum,
-                fanOutput
-            ))
-        }
+        didSet { refresh() }
     }
-    override var isFlipped: Bool { true }
+    package var duration: TimeInterval = 60 * 60 { didSet { refresh() } }
+    package var showsFanOutput = true { didSet { refresh() } }
+    package override var isFlipped: Bool { true }
 
-    override init(frame frameRect: NSRect) {
+    package override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         wantsLayer = true
         layer?.cornerRadius = 8
         layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
         setAccessibilityRole(.group)
-        setAccessibilityLabel("Average CPU temperature and fan output over the last 24 hours")
     }
 
-    required init?(coder: NSCoder) { nil }
+    package required init?(coder: NSCoder) { nil }
 
-    override func draw(_ dirtyRect: NSRect) {
+    package override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
         let plot = bounds.insetBy(dx: 34, dy: 16)
         let attributes: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 9), .foregroundColor: NSColor.secondaryLabelColor]
-        guard samples.count > 1 else {
-            ("Collecting temperature history…" as NSString).draw(at: CGPoint(x: 12, y: bounds.midY - 6), withAttributes: attributes)
+        let end = Date().timeIntervalSince1970
+        let start = end - duration
+        let visibleSamples = samples.filter { (start...end).contains($0.timestamp) }
+        guard visibleSamples.count > 1 else {
+            ("Collecting history…" as NSString).draw(at: CGPoint(x: 12, y: bounds.midY - 6), withAttributes: attributes)
             return
         }
 
-        let end = Date().timeIntervalSince1970
-        let start = end - 24 * 60 * 60
         let path = NSBezierPath()
         path.lineWidth = 2
         path.lineJoinStyle = .round
-        for (index, sample) in samples.enumerated() {
-            let x = plot.minX + (sample.timestamp - start) / (end - start) * plot.width
+        for (index, sample) in visibleSamples.enumerated() {
+            let x = plot.minX + (sample.timestamp - start) / duration * plot.width
             let y = plot.maxY - min(1, max(0, (sample.temperature - 20) / 90)) * plot.height
             index == 0 ? path.move(to: CGPoint(x: x, y: y)) : path.line(to: CGPoint(x: x, y: y))
         }
         NSColor.systemOrange.setStroke()
         path.stroke()
 
-        let fanPath = NSBezierPath()
-        fanPath.lineWidth = 2
-        fanPath.lineJoinStyle = .round
-        for (index, sample) in samples.compactMap({ sample in
-            sample.fanPercentage.map { (timestamp: sample.timestamp, percentage: $0) }
-        }).enumerated() {
-            let x = plot.minX + (sample.timestamp - start) / (end - start) * plot.width
-            let y = plot.maxY - min(1, max(0, CGFloat(sample.percentage) / 100)) * plot.height
-            index == 0 ? fanPath.move(to: CGPoint(x: x, y: y)) : fanPath.line(to: CGPoint(x: x, y: y))
+        if showsFanOutput {
+            let fanPath = NSBezierPath()
+            fanPath.lineWidth = 2
+            fanPath.lineJoinStyle = .round
+            for (index, sample) in visibleSamples.compactMap({ sample in
+                sample.fanPercentage.map { (timestamp: sample.timestamp, percentage: $0) }
+            }).enumerated() {
+                let x = plot.minX + (sample.timestamp - start) / duration * plot.width
+                let y = plot.maxY - min(1, max(0, CGFloat(sample.percentage) / 100)) * plot.height
+                index == 0 ? fanPath.move(to: CGPoint(x: x, y: y)) : fanPath.line(to: CGPoint(x: x, y: y))
+            }
+            NSColor.systemBlue.setStroke()
+            fanPath.stroke()
         }
-        NSColor.systemBlue.setStroke()
-        fanPath.stroke()
 
         ("Temperature" as NSString).draw(at: CGPoint(x: plot.minX, y: 1), withAttributes: attributes.merging([.foregroundColor: NSColor.systemOrange]) { _, new in new })
-        ("Fan output" as NSString).draw(at: CGPoint(x: plot.minX + 78, y: 1), withAttributes: attributes.merging([.foregroundColor: NSColor.systemBlue]) { _, new in new })
         ("110°C" as NSString).draw(at: CGPoint(x: 2, y: plot.minY), withAttributes: attributes)
         ("20°C" as NSString).draw(at: CGPoint(x: 7, y: plot.maxY - 11), withAttributes: attributes)
-        ("100%" as NSString).draw(at: CGPoint(x: plot.maxX + 4, y: plot.minY), withAttributes: attributes)
-        ("0%" as NSString).draw(at: CGPoint(x: plot.maxX + 4, y: plot.maxY - 11), withAttributes: attributes)
-        ("24h ago" as NSString).draw(at: CGPoint(x: plot.minX, y: plot.maxY - 11), withAttributes: attributes)
+        if showsFanOutput {
+            ("Fan output" as NSString).draw(at: CGPoint(x: plot.minX + 78, y: 1), withAttributes: attributes.merging([.foregroundColor: NSColor.systemBlue]) { _, new in new })
+            ("100%" as NSString).draw(at: CGPoint(x: plot.maxX + 4, y: plot.minY), withAttributes: attributes)
+            ("0%" as NSString).draw(at: CGPoint(x: plot.maxX + 4, y: plot.maxY - 11), withAttributes: attributes)
+        }
+        ("\(durationText) ago" as NSString).draw(at: CGPoint(x: plot.minX, y: plot.maxY - 11), withAttributes: attributes)
         let now = "now" as NSString
         now.draw(at: CGPoint(x: plot.maxX - now.size(withAttributes: attributes).width, y: plot.maxY - 11), withAttributes: attributes)
+    }
+
+    private var durationText: String {
+        duration < 60 * 60 ? "\(Int(duration / 60))m" : "\(Int(duration / 60 / 60))h"
+    }
+
+    private func refresh() {
+        needsDisplay = true
+        let end = Date().timeIntervalSince1970
+        let visibleSamples = samples.filter { (end - duration...end).contains($0.timestamp) }
+        setAccessibilityLabel("History for the last \(durationText)")
+        guard let latest = visibleSamples.last,
+              let minimum = visibleSamples.map(\.temperature).min(),
+              let maximum = visibleSamples.map(\.temperature).max() else {
+            setAccessibilityValue("No samples yet")
+            return
+        }
+        let temperature = String(format: "Temperature %.1f degrees Celsius; range %.1f to %.1f", latest.temperature, minimum, maximum)
+        let fanOutput = showsFanOutput ? latest.fanPercentage.map { "; fan output \($0) percent" } ?? "" : "; fan output hidden"
+        setAccessibilityValue(temperature + fanOutput)
     }
 }
 
@@ -353,6 +365,8 @@ package final class MainViewController: NSViewController, NSTextFieldDelegate {
     private let toggle = NSSwitch()
     private let graph = CurveView()
     private let historyGraph = TemperatureHistoryView()
+    private let historyRange = NSSegmentedControl(labels: ["15m", "1h", "6h", "24h"], trackingMode: .selectOne, target: nil, action: nil)
+    private let fanHistoryToggle = NSButton(checkboxWithTitle: "Fan output", target: nil, action: nil)
     private let addPointButton = NSButton(title: "Add Point", target: nil, action: nil)
     private let deletePointButton = NSButton(title: "Delete Point", target: nil, action: nil)
     private let resetPointButton = NSButton(title: "Reset", target: nil, action: nil)
@@ -388,6 +402,15 @@ package final class MainViewController: NSViewController, NSTextFieldDelegate {
         graph.heightAnchor.constraint(equalToConstant: 225).isActive = true
         historyGraph.translatesAutoresizingMaskIntoConstraints = false
         historyGraph.heightAnchor.constraint(equalToConstant: 90).isActive = true
+        historyRange.selectedSegment = 1
+        historyRange.target = self
+        historyRange.action = #selector(changeHistoryRange)
+        historyRange.setAccessibilityLabel("History time range")
+        fanHistoryToggle.state = .on
+        fanHistoryToggle.target = self
+        fanHistoryToggle.action = #selector(toggleFanHistory)
+        fanHistoryToggle.controlSize = .small
+
         addPointButton.target = self
         addPointButton.action = #selector(addPoint)
         deletePointButton.target = self
@@ -487,10 +510,13 @@ package final class MainViewController: NSViewController, NSTextFieldDelegate {
         quit.bezelStyle = .rounded
         let quitRow = NSStackView(views: [copyReportButton, NSView(), quit])
 
-        let historyLabel = NSTextField(labelWithString: "Temperature and fan output history · 24h")
+        let historyLabel = NSTextField(labelWithString: "History")
         historyLabel.font = .systemFont(ofSize: 11, weight: .medium)
+        let historyControls = NSStackView(views: [
+            historyLabel, historyRange, NSView(), fanHistoryToggle
+        ])
 
-        let stack = NSStackView(views: [header, fansLabel, graph, pointEditRow, pointRow, historyLabel, historyGraph, controlRow, loginRow, resumeRow, statusRow, quitRow])
+        let stack = NSStackView(views: [header, fansLabel, graph, pointEditRow, pointRow, historyControls, historyGraph, controlRow, loginRow, resumeRow, statusRow, quitRow])
         stack.orientation = .vertical
         stack.spacing = 10
         stack.translatesAutoresizingMaskIntoConstraints = false
@@ -575,6 +601,12 @@ package final class MainViewController: NSViewController, NSTextFieldDelegate {
     @objc private func pasteCurve() { controller.pasteCurve() }
     @objc private func installHelper() { controller.installHelper() }
     @objc private func copySupportReport() { controller.copySupportReport() }
+    @objc private func changeHistoryRange() {
+        historyGraph.duration = [15, 60, 6 * 60, 24 * 60][historyRange.selectedSegment] * 60
+    }
+    @objc private func toggleFanHistory() {
+        historyGraph.showsFanOutput = fanHistoryToggle.state == .on
+    }
     @objc private func toggleResumeAfterLaunch() {
         controller.setResumeAfterLaunch(resumeToggle.state == .on)
     }

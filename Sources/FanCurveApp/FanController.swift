@@ -11,7 +11,7 @@ final class FanController: NSObject, UNUserNotificationCenterDelegate {
     private static let pointsKey = "curvePoints"
     private static let historyKey = "temperatureHistory"
     private static let confirmedUnverifiedModelKey = "confirmedUnverifiedModel"
-    private static let resumeAfterLaunchKey = "resumeAfterLaunch"
+    static let resumeAfterLaunchKey = "resumeAfterLaunch"
 
     private(set) var points: [CurvePoint]
     private(set) var averageTemperature: Double?

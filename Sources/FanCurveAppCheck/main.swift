@@ -226,6 +226,27 @@ func checkToggles() {
 }
 
 @MainActor
+func checkHistoryControls() {
+    let viewController = MainViewController(controller: TestController(), systemActions: TestSystemActions())
+    viewController.loadView()
+
+    let graph: TemperatureHistoryView = require(find(TemperatureHistoryView.self, in: viewController.view), "history graph")
+    let range = require(
+        controls(NSSegmentedControl.self, labelled: "History time range", in: viewController.view).first,
+        "history time range"
+    )
+    precondition(range.selectedSegment == 1 && graph.duration == 60 * 60, "history must default to one hour")
+    range.selectedSegment = 0
+    range.sendAction(range.action, to: range.target)
+    precondition(graph.duration == 15 * 60, "history range must update the graph")
+
+    let fan = require(button("Fan output", in: viewController.view), "fan history toggle")
+    precondition(fan.state == .on && graph.showsFanOutput, "fan history must start visible")
+    fan.performClick(nil)
+    precondition(!graph.showsFanOutput, "fan history toggle must hide the line")
+}
+
+@MainActor
 func checkMenu() {
     _ = NSApplication.shared
     let controller = TestController()
@@ -437,6 +458,7 @@ await MainActor.run {
     checkCurveActions()
     checkButtons()
     checkToggles()
+    checkHistoryControls()
     checkMenu()
 }
 print("FanCurve app action checks passed")
