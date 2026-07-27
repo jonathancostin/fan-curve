@@ -150,6 +150,29 @@ func checkCurveActions() {
 }
 
 @MainActor
+func checkProfiles() {
+    let controller = TestController()
+    let viewController = MainViewController(controller: controller, systemActions: TestSystemActions())
+    viewController.loadView()
+    controller.onUpdate = { viewController.refresh() }
+
+    controller.updatePoints(Array(FanCurve.defaultPoints.dropLast()))
+    let firstProfile = controller.points
+    let profiles = require(
+        controls(NSSegmentedControl.self, labelled: "Saved profile", in: viewController.view).first,
+        "saved profiles"
+    )
+    profiles.selectedSegment = 1
+    profiles.sendAction(profiles.action, to: profiles.target)
+    precondition(controller.selectedProfile == 1 && controller.points == FanCurve.defaultPoints)
+
+    controller.updatePoints(Array(FanCurve.defaultPoints.dropFirst()))
+    profiles.selectedSegment = 0
+    profiles.sendAction(profiles.action, to: profiles.target)
+    precondition(controller.points == firstProfile, "each profile must keep its own curve")
+}
+
+@MainActor
 func checkButtons() {
     let controller = TestController()
     let system = TestSystemActions()
@@ -338,6 +361,8 @@ private func mouseEvent(_ type: NSEvent.EventType, at location: CGPoint, in wind
 
 private final class TestController: FanCurveControlling {
     var points = FanCurve.defaultPoints
+    var selectedProfile = 0
+    var profiles = Array(repeating: FanCurve.defaultPoints, count: 3)
     var averageTemperature: Double?
     var temperatureHistory: [TemperatureSample] = []
     var outputPercentage = 40
@@ -364,7 +389,14 @@ private final class TestController: FanCurveControlling {
 
     func updatePoints(_ points: [CurvePoint]) {
         self.points = points
+        profiles[selectedProfile] = points
         pointUpdateCount += 1
+    }
+
+    func selectProfile(_ profile: Int) {
+        selectedProfile = profile
+        points = profiles[profile]
+        onUpdate?()
     }
 
     func resetPoints() {
@@ -456,6 +488,7 @@ private final class TestPopover: NSPopover {
 
 await MainActor.run {
     checkCurveActions()
+    checkProfiles()
     checkButtons()
     checkToggles()
     checkHistoryControls()
