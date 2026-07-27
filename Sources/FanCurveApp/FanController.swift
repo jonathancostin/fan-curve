@@ -9,11 +9,13 @@ final class FanController: NSObject, UNUserNotificationCenterDelegate {
     static let shared = FanController()
 
     private static let pointsKey = "curvePoints"
+    private static let selectedProfileKey = "selectedCurveProfile"
     private static let historyKey = "temperatureHistory"
     private static let confirmedUnverifiedModelKey = "confirmedUnverifiedModel"
     static let resumeAfterLaunchKey = "resumeAfterLaunch"
 
     private(set) var points: [CurvePoint]
+    private(set) var selectedProfile: Int
     private(set) var averageTemperature: Double?
     private(set) var temperatureHistory: [TemperatureSample]
     private(set) var outputPercentage = 0
@@ -44,7 +46,8 @@ final class FanController: NSObject, UNUserNotificationCenterDelegate {
     private override init() {
         resumeAfterLaunch = UserDefaults.standard.bool(forKey: Self.resumeAfterLaunchKey)
         launchRecovery = LaunchRecovery(requested: resumeAfterLaunch)
-        if let data = UserDefaults.standard.data(forKey: Self.pointsKey),
+        selectedProfile = min(2, max(0, UserDefaults.standard.integer(forKey: Self.selectedProfileKey)))
+        if let data = UserDefaults.standard.data(forKey: Self.pointsKey(for: selectedProfile)),
            let saved = FanCurve.decodePoints(from: data) {
             points = saved
         } else {
@@ -75,9 +78,20 @@ final class FanController: NSObject, UNUserNotificationCenterDelegate {
         guard FanCurve.isValid(sorted) else { return }
         points = sorted
         if let data = try? JSONEncoder().encode(points) {
-            UserDefaults.standard.set(data, forKey: Self.pointsKey)
+            UserDefaults.standard.set(data, forKey: Self.pointsKey(for: selectedProfile))
         }
         refreshOutput()
+        onUpdate?()
+    }
+
+    func selectProfile(_ profile: Int) {
+        guard (0..<3).contains(profile), profile != selectedProfile else { return }
+        selectedProfile = profile
+        UserDefaults.standard.set(profile, forKey: Self.selectedProfileKey)
+        points = UserDefaults.standard.data(forKey: Self.pointsKey(for: profile))
+            .flatMap(FanCurve.decodePoints) ?? FanCurve.defaultPoints
+        refreshOutput()
+        status = "Profile \(profile + 1) selected"
         onUpdate?()
     }
 
@@ -108,6 +122,10 @@ final class FanController: NSObject, UNUserNotificationCenterDelegate {
         }
         updatePoints(pasted)
         showStatus("Curve pasted")
+    }
+
+    private static func pointsKey(for profile: Int) -> String {
+        profile == 0 ? pointsKey : "\(pointsKey).\(profile + 1)"
     }
 
     func showStatus(_ message: String) {

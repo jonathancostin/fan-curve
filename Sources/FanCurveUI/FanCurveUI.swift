@@ -5,6 +5,7 @@ import ServiceManagement
 
 package protocol FanCurveControlling: AnyObject {
     var points: [CurvePoint] { get }
+    var selectedProfile: Int { get }
     var averageTemperature: Double? { get }
     var temperatureHistory: [TemperatureSample] { get }
     var outputPercentage: Int { get }
@@ -24,6 +25,7 @@ package protocol FanCurveControlling: AnyObject {
     var canCopySupportReport: Bool { get }
 
     func updatePoints(_ points: [CurvePoint])
+    func selectProfile(_ profile: Int)
     func resetPoints()
     func copyCurve()
     func pasteCurve()
@@ -363,6 +365,7 @@ package final class MainViewController: NSViewController, NSTextFieldDelegate {
     private let fansLabel = NSTextField(wrappingLabelWithString: "Checking fans…")
     private let statusLabel = NSTextField(labelWithString: "Apple automatic control")
     private let toggle = NSSwitch()
+    private let profileControl = NSSegmentedControl(labels: ["1", "2", "3"], trackingMode: .selectOne, target: nil, action: nil)
     private let graph = CurveView()
     private let historyGraph = TemperatureHistoryView()
     private let historyRange = NSSegmentedControl(labels: ["15m", "1h", "6h", "24h"], trackingMode: .selectOne, target: nil, action: nil)
@@ -400,6 +403,10 @@ package final class MainViewController: NSViewController, NSTextFieldDelegate {
         graph.onSelectionChange = { [weak self] in self?.refreshPointControls() }
         graph.translatesAutoresizingMaskIntoConstraints = false
         graph.heightAnchor.constraint(equalToConstant: 225).isActive = true
+        profileControl.selectedSegment = controller.selectedProfile
+        profileControl.target = self
+        profileControl.action = #selector(selectProfile)
+        profileControl.setAccessibilityLabel("Saved profile")
         historyGraph.translatesAutoresizingMaskIntoConstraints = false
         historyGraph.heightAnchor.constraint(equalToConstant: 90).isActive = true
         historyRange.selectedSegment = 1
@@ -474,6 +481,9 @@ package final class MainViewController: NSViewController, NSTextFieldDelegate {
 
         let header = NSStackView(views: [metric("Average CPU", value: averageValue), metric("Fan output", value: outputValue, alignment: .right)])
         header.distribution = .fillEqually
+        let profileLabel = NSTextField(labelWithString: "Profile")
+        profileLabel.font = .systemFont(ofSize: 13, weight: .medium)
+        let profileRow = NSStackView(views: [profileLabel, NSView(), profileControl])
         fansLabel.font = .systemFont(ofSize: 11)
         fansLabel.textColor = .secondaryLabelColor
 
@@ -516,7 +526,7 @@ package final class MainViewController: NSViewController, NSTextFieldDelegate {
             historyLabel, historyRange, NSView(), fanHistoryToggle
         ])
 
-        let stack = NSStackView(views: [header, fansLabel, graph, pointEditRow, pointRow, historyControls, historyGraph, controlRow, loginRow, resumeRow, statusRow, quitRow])
+        let stack = NSStackView(views: [header, fansLabel, profileRow, graph, pointEditRow, pointRow, historyControls, historyGraph, controlRow, loginRow, resumeRow, statusRow, quitRow])
         stack.orientation = .vertical
         stack.spacing = 10
         stack.translatesAutoresizingMaskIntoConstraints = false
@@ -558,6 +568,7 @@ package final class MainViewController: NSViewController, NSTextFieldDelegate {
             : controller.helperInstalled ? "helper installed" : "helper needed"
         hardwareLabel.stringValue = "\(controller.supportLevel.rawValue) · \(fanText) · \(helperText) · 0% = min"
         graph.points = controller.points
+        profileControl.selectedSegment = controller.selectedProfile
         graph.currentTemperature = controller.averageTemperature
         historyGraph.samples = controller.temperatureHistory
         refreshPointControls()
@@ -587,6 +598,7 @@ package final class MainViewController: NSViewController, NSTextFieldDelegate {
         controller.setEnabled(true, reason: nil)
     }
     @objc private func addPoint() { graph.addPoint() }
+    @objc private func selectProfile() { controller.selectProfile(profileControl.selectedSegment) }
     @objc private func deletePoint() { graph.deleteSelectedPoint() }
     @objc private func resetPoints() { controller.resetPoints() }
     @objc private func changePointTemperature(_ sender: NSControl) {
