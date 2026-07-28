@@ -193,7 +193,7 @@ public enum SecureRegularFile {
               info.st_uid == ownerUID,
               (info.st_mode & mode_t(forbiddenPermissions)) == 0,
               maxSize > 0,
-              (1...maxSize).contains(info.st_size) else { return nil }
+              (1...maxSize).contains(Int64(info.st_size)) else { return nil }
 
         var data = Data(count: Int(info.st_size))
         let count = data.withUnsafeMutableBytes { buffer -> Int in
