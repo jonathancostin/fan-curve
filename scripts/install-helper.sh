@@ -16,12 +16,18 @@ resource_dir="$script_dir"
 [[ -x $resource_dir/FanCurveHelper && -f $resource_dir/com.jonathan.FanCurveHelper.plist ]] \
     || resource_dir="$project_dir/build/FanCurve.app/Contents/Resources"
 [[ -x $resource_dir/FanCurveHelper && -f $resource_dir/com.jonathan.FanCurveHelper.plist ]] \
-    || resource_dir="/Applications/FanCurve.app/Contents/Resources"
+    || resource_dir="/Applications/Fan Curve.app/Contents/Resources"
 helper_source="$resource_dir/FanCurveHelper"
 template_source="$resource_dir/com.jonathan.FanCurveHelper.plist"
+probe_source="$resource_dir/FanCurveProbe"
 
 if [[ $action == install ]]; then
-    [[ -x $helper_source && -f $template_source ]] || { echo "build and install FanCurve.app first" >&2; exit 1; }
+    [[ -x $helper_source && -f $template_source && -x $probe_source ]] \
+        || { echo "build and install FanCurve.app first" >&2; exit 1; }
+    fan_control_supported=$("$probe_source" | /usr/bin/plutil -extract fanControlSupported raw -o - - 2>/dev/null) \
+        || fan_control_supported=false
+    [[ $fan_control_supported == true ]] \
+        || { echo "no supported fans found; helper not installed" >&2; exit 1; }
     helper_hash=$(/usr/bin/shasum -a 256 "$helper_source" | /usr/bin/awk '{print $1}')
     template_hash=$(/usr/bin/shasum -a 256 "$template_source" | /usr/bin/awk '{print $1}')
 else

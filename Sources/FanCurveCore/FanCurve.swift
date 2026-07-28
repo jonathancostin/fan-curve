@@ -31,6 +31,23 @@ public struct TemperatureSample: Codable, Equatable, Sendable {
 }
 
 public enum TemperatureHistory {
+    public static func decode(from data: Data) -> [TemperatureSample]? {
+        guard data.count <= 1_048_576,
+              let samples = try? JSONDecoder().decode([TemperatureSample].self, from: data),
+              samples.count <= 1_500,
+              samples.allSatisfy({
+                  $0.timestamp.isFinite
+                      && $0.timestamp >= 0
+                      && $0.temperature.isFinite
+                      && (0...110).contains($0.temperature)
+                      && ($0.fanPercentage.map { (0...100).contains($0) } ?? true)
+              }),
+              zip(samples, samples.dropFirst()).allSatisfy({ $0.timestamp <= $1.timestamp }) else {
+            return nil
+        }
+        return samples
+    }
+
     public static func appending(
         _ temperature: Double,
         fanPercentage: Int? = nil,
@@ -40,7 +57,10 @@ public enum TemperatureHistory {
         retention: TimeInterval = 24 * 60 * 60
     ) -> [TemperatureSample] {
         let retained = samples.filter { timestamp - $0.timestamp < retention && $0.timestamp <= timestamp }
-        guard retained.last.map({ timestamp - $0.timestamp >= interval }) ?? true else { return retained }
+        guard retained.last.map({
+            timestamp - $0.timestamp >= interval
+                || ($0.fanPercentage == nil) != (fanPercentage == nil)
+        }) ?? true else { return retained }
         return retained + [TemperatureSample(
             timestamp: timestamp,
             temperature: temperature,
@@ -73,7 +93,8 @@ public struct FanCurve: Sendable {
     }
 
     public static func decodePoints(from data: Data) -> [CurvePoint]? {
-        guard let points = try? JSONDecoder().decode([CurvePoint].self, from: data),
+        guard data.count <= 16_384,
+              let points = try? JSONDecoder().decode([CurvePoint].self, from: data),
               isValid(points) else { return nil }
         return points
     }
@@ -132,7 +153,7 @@ public struct ControlState: Codable, Sendable {
     }
 }
 
-public struct ControlAcknowledgement: Codable, Sendable {
+public struct ControlAcknowledgement: Codable, Equatable, Sendable {
     public let heartbeat: TimeInterval
     public let percentage: Int
     public let ownerUID: UInt32
@@ -152,6 +173,38 @@ public struct ActiveControlTransition: Sendable {
     public mutating func shouldNotify(isEnabled: Bool, isActive: Bool) -> Bool {
         defer { wasActive = isEnabled && isActive }
         return wasActive && isEnabled && !isActive
+    }
+}
+
+public enum SecureRegularFile {
+    public static func read(
+        _ path: String,
+        ownerUID: UInt32,
+        forbiddenPermissions: UInt16,
+        maxSize: Int64
+    ) -> Data? {
+        let descriptor = open(path, O_RDONLY | O_NOFOLLOW)
+        guard descriptor >= 0 else { return nil }
+        defer { close(descriptor) }
+
+        var info = stat()
+        guard fstat(descriptor, &info) == 0,
+              (info.st_mode & S_IFMT) == S_IFREG,
+              info.st_uid == ownerUID,
+              (info.st_mode & mode_t(forbiddenPermissions)) == 0,
+              maxSize > 0,
+              (1...maxSize).contains(Int64(info.st_size)) else { return nil }
+
+        var data = Data(count: Int(info.st_size))
+        let count = data.withUnsafeMutableBytes { buffer -> Int in
+            guard let address = buffer.baseAddress else { return -1 }
+            #if canImport(Darwin)
+            return Darwin.read(descriptor, address, buffer.count)
+            #else
+            return Glibc.read(descriptor, address, buffer.count)
+            #endif
+        }
+        return count == data.count ? data : nil
     }
 }
 
@@ -247,11 +300,6 @@ public enum HelperInstallation {
 #endif
     }
 
-    public static func requiresUpdate(bundledSHA256: String?, installedSHA256: String?) -> Bool {
-        guard let bundledSHA256, let installedSHA256 else { return false }
-        return bundledSHA256 != installedSHA256
-    }
-
     public static func isSecure(
         helperPath: String = HelperInstallation.helperPath,
         launchDaemonPath: String = HelperInstallation.launchDaemonPath
@@ -263,14 +311,30 @@ public enum HelperInstallation {
     public static func isCurrent(
         bundledHelperPath: String,
         helperPath: String = HelperInstallation.helperPath,
-        launchDaemonPath: String = HelperInstallation.launchDaemonPath
+        launchDaemonPath: String = HelperInstallation.launchDaemonPath,
+        ownerUID: UInt32 = getuid()
     ) -> Bool {
+        let bundledLaunchDaemonPath = URL(fileURLWithPath: bundledHelperPath)
+            .deletingLastPathComponent()
+            .appendingPathComponent("com.jonathan.FanCurveHelper.plist")
+            .path
         guard isSecure(helperPath: helperPath, launchDaemonPath: launchDaemonPath),
               let bundled = try? Data(contentsOf: URL(fileURLWithPath: bundledHelperPath), options: .mappedIfSafe),
-              let installed = try? Data(contentsOf: URL(fileURLWithPath: helperPath), options: .mappedIfSafe) else {
+              let installed = try? Data(contentsOf: URL(fileURLWithPath: helperPath), options: .mappedIfSafe),
+              bundled == installed,
+              let template = try? Data(contentsOf: URL(fileURLWithPath: bundledLaunchDaemonPath)),
+              let installedLaunchDaemon = try? Data(contentsOf: URL(fileURLWithPath: launchDaemonPath)) else {
             return false
         }
-        return bundled == installed
+        return launchDaemonMatches(template: template, installed: installedLaunchDaemon, ownerUID: ownerUID)
+    }
+
+    package static func launchDaemonMatches(template: Data, installed: Data, ownerUID: UInt32) -> Bool {
+        guard let template = String(data: template, encoding: .utf8) else { return false }
+        return Data(template.replacingOccurrences(
+            of: "__OWNER_UID__",
+            with: String(ownerUID)
+        ).utf8) == installed
     }
 
     private static func secureRegularFile(_ path: String, mustBeExecutable: Bool) -> Bool {
@@ -305,8 +369,10 @@ public enum FanSmoothing {
         target: Int,
         riseLimit: Int = 5,
         fallLimit: Int = 2,
-        deadband: Int = 2
+        deadband: Int = 2,
+        advance: Bool = true
     ) -> Int {
+        guard advance else { return current }
         let difference = target - current
         guard abs(difference) > deadband else { return current }
         return current + min(riseLimit, max(-fallLimit, difference))
@@ -363,8 +429,8 @@ public struct FanTelemetry: Equatable, Sendable {
 
     public init(id: Int, actualRPM: Double?, targetRPM: Double?, mode: HardwareFanMode?) {
         self.id = id
-        self.actualRPM = actualRPM.flatMap { $0.isFinite ? $0 : nil }
-        self.targetRPM = targetRPM.flatMap { $0.isFinite ? $0 : nil }
+        self.actualRPM = MacHardware.validRPM(actualRPM)
+        self.targetRPM = MacHardware.validRPM(targetRPM)
         self.mode = mode
     }
 
@@ -413,6 +479,11 @@ public enum MacHardware {
         guard fanControlSupported else { return .unsupported }
         guard model != "Mac17,9" || fanCount == 2 else { return .unsupported }
         return model == "Mac17,9" ? .verified : .knownKeys
+    }
+
+    public static func validRPM(_ value: Double?) -> Double? {
+        guard let value, value.isFinite, (0...20_000).contains(value) else { return nil }
+        return value
     }
 
     public static func averageCPUTemperature(
@@ -500,7 +571,8 @@ public enum MacHardware {
             guard availableKeys.contains(key),
                   let value = read(key),
                   value.isFinite,
-                  (0...110).contains(value) else { return nil }
+                  value > 0,
+                  value <= 110 else { return nil }
             return (key, value)
         }
         if !readings.isEmpty {
@@ -511,7 +583,7 @@ public enum MacHardware {
         }
         guard !appleSilicon else { return nil }
         for key in intelFallbackKeys where availableKeys.contains(key) {
-            guard let value = read(key), value.isFinite, (0...110).contains(value) else { continue }
+            guard let value = read(key), value.isFinite, value > 0, value <= 110 else { continue }
             return CPUTemperatureSnapshot(average: value, sensorKeys: [key])
         }
         return nil

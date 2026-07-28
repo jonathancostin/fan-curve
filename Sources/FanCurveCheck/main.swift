@@ -1,5 +1,10 @@
 import FanCurveCore
 import Foundation
+#if canImport(Darwin)
+import Darwin
+#else
+import Glibc
+#endif
 
 let curve = FanCurve(points: [
     CurvePoint(temperature: 40, percentage: 10),
@@ -26,6 +31,7 @@ let sharedCurve = [
 ]
 precondition(FanCurve.decodePoints(from: try! JSONEncoder().encode(sharedCurve)) == sharedCurve)
 precondition(FanCurve.decodePoints(from: Data("not json".utf8)) == nil)
+precondition(FanCurve.decodePoints(from: Data(repeating: 0, count: 16_385)) == nil)
 precondition(FanCurve.decodePoints(from: try! JSONEncoder().encode([
     CurvePoint(temperature: 40, percentage: 80),
     CurvePoint(temperature: 60, percentage: 20)
@@ -100,6 +106,8 @@ precondition(MacHardware.averageCPUTemperature(
 let invalidTemperatures = [
     "Tp01": Double.nan,
     "Tp05": 111.0,
+    "Tf04": 0.0,
+    "TCAD": 0.0,
     "TC0D": Double.nan,
     "TC0P": 111.0
 ]
@@ -162,6 +170,11 @@ precondition(
         && fanTelemetry.targetRPMText == "—"
         && fanTelemetry.modeText == "Forced"
 )
+precondition(MacHardware.validRPM(0) == 0)
+precondition(MacHardware.validRPM(20_000) == 20_000)
+precondition(MacHardware.validRPM(-1) == nil)
+precondition(MacHardware.validRPM(20_001) == nil)
+precondition(FanTelemetry(id: 0, actualRPM: -1, targetRPM: 20_001, mode: .automatic).actualRPM == nil)
 
 let validState = ControlState(enabled: true, percentage: 50, heartbeat: 100, ownerUID: 501)
 precondition(ControlPolicy.allowsControl(
@@ -201,7 +214,38 @@ precondition(!ControlPolicy.allowsControl(
     thermalPressureIsSafe: true
 ))
 
+let secureFileDirectory = FileManager.default.temporaryDirectory
+    .appendingPathComponent("fancurve-check-\(UUID().uuidString)", isDirectory: true)
+try! FileManager.default.createDirectory(at: secureFileDirectory, withIntermediateDirectories: false)
+defer { try? FileManager.default.removeItem(at: secureFileDirectory) }
+let secureFile = secureFileDirectory.appendingPathComponent("state")
+try! Data("safe".utf8).write(to: secureFile)
+try! FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: secureFile.path)
+precondition(SecureRegularFile.read(
+    secureFile.path,
+    ownerUID: getuid(),
+    forbiddenPermissions: 0o077,
+    maxSize: 4_096
+) == Data("safe".utf8))
+let secureFileLink = secureFileDirectory.appendingPathComponent("state-link")
+try! FileManager.default.createSymbolicLink(at: secureFileLink, withDestinationURL: secureFile)
+precondition(SecureRegularFile.read(
+    secureFileLink.path,
+    ownerUID: getuid(),
+    forbiddenPermissions: 0o077,
+    maxSize: 4_096
+) == nil)
+try! Data(repeating: 0, count: 4_097).write(to: secureFile)
+precondition(SecureRegularFile.read(
+    secureFile.path,
+    ownerUID: getuid(),
+    forbiddenPermissions: 0o077,
+    maxSize: 4_096
+) == nil)
+
 let acknowledgement = ControlAcknowledgement(heartbeat: 100, percentage: 50, ownerUID: 501)
+precondition(acknowledgement == ControlAcknowledgement(heartbeat: 100, percentage: 50, ownerUID: 501))
+precondition(acknowledgement != ControlAcknowledgement(heartbeat: 100, percentage: 51, ownerUID: 501))
 precondition(ControlPolicy.acknowledgementMatches(
     acknowledgement,
     expectedPercentage: 50,
@@ -257,14 +301,23 @@ precondition(!HelperInstallation.isSecure(
     helperPath: "/nonexistent/fancurve-helper",
     launchDaemonPath: "/nonexistent/fancurve-helper.plist"
 ))
-precondition(!HelperInstallation.requiresUpdate(bundledSHA256: nil, installedSHA256: "old"))
-precondition(!HelperInstallation.requiresUpdate(bundledSHA256: "same", installedSHA256: "same"))
-precondition(HelperInstallation.requiresUpdate(bundledSHA256: "new", installedSHA256: "old"))
+let launchDaemonTemplate = Data("/tmp/fancurve-__OWNER_UID__.json __OWNER_UID__".utf8)
+precondition(HelperInstallation.launchDaemonMatches(
+    template: launchDaemonTemplate,
+    installed: Data("/tmp/fancurve-501.json 501".utf8),
+    ownerUID: 501
+))
+precondition(!HelperInstallation.launchDaemonMatches(
+    template: launchDaemonTemplate,
+    installed: Data("/tmp/fancurve-502.json 502".utf8),
+    ownerUID: 501
+))
 
 precondition(FanSmoothing.next(current: 20, target: 80) == 25)
 precondition(FanSmoothing.next(current: 80, target: 20) == 78)
 precondition(FanSmoothing.next(current: 50, target: 53) == 53)
 precondition(FanSmoothing.next(current: 50, target: 52) == 50)
+precondition(FanSmoothing.next(current: 20, target: 80, advance: false) == 20)
 
 precondition(ControlDisplayState(hasTemperature: false, fanCount: 2, isEnabled: false, isActive: false) == .problem)
 precondition(ControlDisplayState(hasTemperature: true, fanCount: 0, isEnabled: false, isActive: false) == .problem)
@@ -291,12 +344,29 @@ precondition(TemperatureHistory.appending(
     at: 100_010,
     to: history
 ) == history + [TemperatureSample(timestamp: 100_010, temperature: 70, fanPercentage: 50)])
-
-let oldHistory = try! JSONDecoder().decode(
-    [TemperatureSample].self,
-    from: Data(#"[{"timestamp":100,"temperature":55}]"#.utf8)
+let stoppedHistory = TemperatureHistory.appending(
+    71,
+    at: 100_020,
+    to: history + [TemperatureSample(timestamp: 100_010, temperature: 70, fanPercentage: 50)]
 )
+precondition(stoppedHistory.last == TemperatureSample(timestamp: 100_020, temperature: 71))
+precondition(TemperatureHistory.appending(
+    72,
+    fanPercentage: 50,
+    at: 100_030,
+    to: stoppedHistory
+).last == TemperatureSample(timestamp: 100_030, temperature: 72, fanPercentage: 50))
+
+let oldHistory = TemperatureHistory.decode(from: Data(#"[{"timestamp":100,"temperature":55}]"#.utf8))
 precondition(oldHistory == [TemperatureSample(timestamp: 100, temperature: 55)])
+precondition(TemperatureHistory.decode(from: Data(repeating: 0, count: 1_048_577)) == nil)
+precondition(TemperatureHistory.decode(from: Data(
+    #"[{"timestamp":101,"temperature":55},{"timestamp":100,"temperature":56}]"#.utf8
+)) == nil)
+precondition(TemperatureHistory.decode(from: Data(#"[{"timestamp":100,"temperature":111}]"#.utf8)) == nil)
+precondition(TemperatureHistory.decode(from: try! JSONEncoder().encode(
+    (0...1_500).map { TemperatureSample(timestamp: Double($0), temperature: 55) }
+)) == nil)
 
 var wakeRecovery = WakeRecovery()
 let oldPoll = wakeRecovery.beginPoll()!
@@ -312,6 +382,9 @@ let retryWakePoll = wakeRecovery.beginPoll()!
 precondition(retryWakePoll)
 precondition(wakeRecovery.finishPoll(isWakePoll: retryWakePoll, hasTemperature: true))
 wakeRecovery.prepareForSleep(wasEnabled: false)
+precondition(!wakeRecovery.didWake())
+wakeRecovery.prepareForSleep(wasEnabled: true)
+wakeRecovery.cancelResume()
 precondition(!wakeRecovery.didWake())
 
 for (requested, temperature, fans, helper) in [
@@ -333,5 +406,12 @@ for (requested, temperature, fans, helper) in [
         helperIsCurrent: true
     ))
 }
+var cancelledLaunchRecovery = LaunchRecovery(requested: true)
+cancelledLaunchRecovery.cancelResume()
+precondition(!cancelledLaunchRecovery.finishFirstPoll(
+    hasTemperature: true,
+    hasSupportedFans: true,
+    helperIsCurrent: true
+))
 
 print("FanCurve checks passed")

@@ -17,12 +17,12 @@ private func fail(_ message: String) -> Never {
 }
 
 private func loadState(path: String, expectedUID: UInt32) -> ControlState? {
-    var info = stat()
-    guard lstat(path, &info) == 0,
-          (info.st_mode & S_IFMT) == S_IFREG,
-          info.st_uid == expectedUID,
-          (info.st_mode & 0o077) == 0,
-          let data = FileManager.default.contents(atPath: path),
+    guard let data = SecureRegularFile.read(
+              path,
+              ownerUID: expectedUID,
+              forbiddenPermissions: 0o077,
+              maxSize: 4_096
+          ),
           let state = try? JSONDecoder().decode(ControlState.self, from: data),
           state.ownerUID == expectedUID else { return nil }
     return state
@@ -101,20 +101,17 @@ private func clearActiveMarker() {
     unlink(activeMarkerPath)
 }
 
-private func writeAcknowledgement(_ state: ControlState, path: String) {
-    let acknowledgement = ControlAcknowledgement(
-        heartbeat: state.heartbeat,
-        percentage: state.percentage,
-        ownerUID: state.ownerUID
-    )
-    guard let data = try? JSONEncoder().encode(acknowledgement) else { return }
+private func writeAcknowledgement(_ acknowledgement: ControlAcknowledgement, path: String) -> Bool {
+    guard let data = try? JSONEncoder().encode(acknowledgement) else { return false }
     let temporaryPath = path + ".new"
     do {
         try data.write(to: URL(fileURLWithPath: temporaryPath))
         try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: temporaryPath)
         guard rename(temporaryPath, path) == 0 else { throw CocoaError(.fileWriteUnknown) }
+        return true
     } catch {
         unlink(temporaryPath)
+        return false
     }
 }
 
@@ -142,6 +139,7 @@ signal(SIGTERM, handleTermination)
 signal(SIGINT, handleTermination)
 
 var controlling = hasActiveMarker()
+var lastAcknowledgement: ControlAcknowledgement?
 defer {
     if controlling {
         restoreAutomatic(fans)
@@ -173,7 +171,15 @@ while shouldStop == 0 {
             }
         }
         if controlling {
-            writeAcknowledgement(state, path: acknowledgementPath)
+            let acknowledgement = ControlAcknowledgement(
+                heartbeat: state.heartbeat,
+                percentage: state.percentage,
+                ownerUID: state.ownerUID
+            )
+            if acknowledgement != lastAcknowledgement,
+               writeAcknowledgement(acknowledgement, path: acknowledgementPath) {
+                lastAcknowledgement = acknowledgement
+            }
         }
     } else {
         if controlling || hasActiveMarker() {
@@ -182,6 +188,7 @@ while shouldStop == 0 {
             controlling = false
         }
         unlink(acknowledgementPath)
+        lastAcknowledgement = nil
     }
     usleep(500_000)
 }
