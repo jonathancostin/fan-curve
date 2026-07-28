@@ -48,9 +48,8 @@ private func fanMode(_ fanID: Int) -> HardwareFanMode? {
     #endif
 }
 
-private func finiteSMCValue(_ key: String) -> Double? {
-    guard let value = SMC.shared.getValue(key), value.isFinite else { return nil }
-    return value
+private func rpmValue(_ key: String) -> Double? {
+    MacHardware.validRPM(SMC.shared.getValue(key))
 }
 
 private func redirectStandardOutputToStandardError() -> Int32 {
@@ -78,9 +77,8 @@ let info = (try? Data(contentsOf: contentsURL.appendingPathComponent("Info.plist
 let shortVersion = info?["CFBundleShortVersionString"] as? String ?? "development"
 let buildVersion = info?["CFBundleVersion"] as? String
 let appVersion = buildVersion.map { "\(shortVersion) (\($0))" } ?? shortVersion
-let bundledHelperHash = HelperInstallation.sha256(
-    contentsURL.appendingPathComponent("Resources/FanCurveHelper").path
-)
+let bundledHelperPath = contentsURL.appendingPathComponent("Resources/FanCurveHelper").path
+let bundledHelperHash = HelperInstallation.sha256(bundledHelperPath)
 let installedHelperHash = HelperInstallation.sha256(HelperInstallation.helperPath)
 
 let savedOutput = redirectStandardOutputToStandardError()
@@ -101,8 +99,8 @@ let fanReports = fans.map { fan in
         id: fan.id,
         minimumRPM: fan.minimumRPM,
         maximumRPM: fan.maximumRPM,
-        actualRPM: finiteSMCValue("F\(fan.id)Ac"),
-        targetRPM: finiteSMCValue("F\(fan.id)Tg"),
+        actualRPM: rpmValue("F\(fan.id)Ac"),
+        targetRPM: rpmValue("F\(fan.id)Tg"),
         mode: fanMode(fan.id)?.rawValue ?? "unknown"
     )
 }
@@ -129,8 +127,8 @@ let report = SupportReport(
     helperActive: FileManager.default.fileExists(atPath: "/var/run/fancurve.active"),
     bundledHelperSHA256: bundledHelperHash,
     installedHelperSHA256: installedHelperHash,
-    helperMatchesBundle: bundledHelperHash.flatMap { bundled in
-        installedHelperHash.map { $0 == bundled }
+    helperMatchesBundle: bundledHelperHash.map { _ in
+        HelperInstallation.isCurrent(bundledHelperPath: bundledHelperPath)
     }
 )
 guard restoreStandardOutput(savedOutput) else {

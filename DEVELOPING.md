@@ -33,8 +33,8 @@ git diff --check
 ```
 
 `FanCurveAppCheck` drives every menu action through the real AppKit controls:
-curve drag, arrow keys, exact value edits, add, delete, reset, copy, paste,
-enable, helper install, launch at login, launch resume, support report, menu
+curve drag, empty-space clicks, arrow keys, exact value edits, profiles, add,
+delete, reset, copy, paste, enable, helper install, launch at login, launch resume, support report, menu
 open/close, and quit. It swaps in test effects, so it cannot change fans,
 login settings, the clipboard, or the running app.
 
@@ -42,7 +42,7 @@ login settings, the clipboard, or the running app.
 launch rules. Real SMC writes and automatic recovery still need the attended
 device checks in [Device support](SUPPORT.md).
 
-The cross-build needs Apple's Intel support tools. Pull requests and releases run the portable core checks on AWS runners for both ARM and Intel. Run the full app build and signing checks on a Mac before merging.
+The cross-build needs Apple's Intel support tools. Pull requests and releases run the portable core checks on AWS for both processors, then cross-build and run the Intel core and AppKit checks on the Mac job. Run the signing check on a Mac before merging.
 
 ## Release flow
 

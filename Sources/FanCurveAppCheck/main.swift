@@ -8,13 +8,31 @@ func checkCurveActions() {
     let controller = TestController()
     let viewController = MainViewController(controller: controller, systemActions: TestSystemActions())
     viewController.loadView()
+    precondition(viewController.view.fittingSize.height <= 660, "popover must fit a 768-pixel display with the Dock visible")
     controller.onUpdate = { viewController.refresh() }
 
     let graph: CurveView = require(find(CurveView.self, in: viewController.view), "curve graph")
     graph.frame = NSRect(x: 0, y: 0, width: 380, height: 225)
     let window = NSWindow(contentViewController: viewController)
     window.contentView?.layoutSubtreeIfNeeded()
-    graph.mouseDown(with: mouseEvent(.leftMouseDown, at: graph.convert(CGPoint(x: 62, y: 195), to: nil), in: window))
+    precondition(
+        graph.accessibilityValue() as? String == "5 points; no point selected",
+        "curve graph must expose its selection state"
+    )
+    graph.mouseDown(with: mouseEvent(.leftMouseDown, at: graph.convert(CGPoint(x: 200, y: 200), to: nil), in: window))
+    precondition(controller.points == FanCurve.defaultPoints, "clicking empty graph space must not change the curve")
+    graph.keyDown(with: keyEvent(keyCode: 0))
+    precondition(graph.selectedPoint == nil, "non-arrow keys must not select a curve point")
+    graph.mouseDown(with: mouseEvent(
+        .leftMouseDown,
+        at: graph.convert(CGPoint(x: 62, y: graph.bounds.maxY - 30), to: nil),
+        in: window
+    ))
+    precondition(controller.points == FanCurve.defaultPoints, "selecting a point must not change the curve")
+    precondition(
+        graph.accessibilityValue() as? String == "35 degrees Celsius, 0 percent",
+        "curve graph must expose the selected point"
+    )
     graph.mouseDragged(with: mouseEvent(.leftMouseDragged, at: graph.convert(CGPoint(x: 80, y: 170), to: nil), in: window))
     precondition(controller.points != FanCurve.defaultPoints, "dragging must update the curve")
 
@@ -96,27 +114,17 @@ func checkCurveActions() {
     let liveTextTarget = nextTemperature(for: graph)
     temperatureField.stringValue = String(liveTextTarget)
     let updatesBeforeLiveText = controller.pointUpdateCount
-    viewController.controlTextDidChange(Notification(name: Notification.Name("test"), object: temperatureField))
+    precondition(controller.pointUpdateCount == updatesBeforeLiveText, "typing must not apply a partial value")
+    temperatureField.sendAction(temperatureField.action, to: temperatureField.target)
     precondition(
         graph.selectedPoint?.temperature == liveTextTarget
             && controller.pointUpdateCount == updatesBeforeLiveText + 1,
-        "live text edits must set the selected point"
+        "committing text must set the selected point once"
     )
 
     let updatesBeforeKeys = controller.pointUpdateCount
     for keyCode in [UInt16(123), 124, 125, 126] {
-        graph.keyDown(with: require(NSEvent.keyEvent(
-            with: .keyDown,
-            location: .zero,
-            modifierFlags: [],
-            timestamp: 0,
-            windowNumber: 0,
-            context: nil,
-            characters: "",
-            charactersIgnoringModifiers: "",
-            isARepeat: false,
-            keyCode: keyCode
-        ), "arrow event"))
+        graph.keyDown(with: keyEvent(keyCode: keyCode))
     }
     precondition(controller.pointUpdateCount == updatesBeforeKeys + 4, "all arrow keys must update the curve")
 
@@ -250,10 +258,27 @@ func checkToggles() {
 
 @MainActor
 func checkHistoryControls() {
-    let viewController = MainViewController(controller: TestController(), systemActions: TestSystemActions())
+    let controller = TestController()
+    let viewController = MainViewController(controller: controller, systemActions: TestSystemActions())
     viewController.loadView()
+    let segments = TemperatureHistoryView.fanOutputSegments(in: [
+        TemperatureSample(timestamp: 1, temperature: 50, fanPercentage: 20),
+        TemperatureSample(timestamp: 2, temperature: 51),
+        TemperatureSample(timestamp: 3, temperature: 52, fanPercentage: 30),
+        TemperatureSample(timestamp: 4, temperature: 53, fanPercentage: 40)
+    ])
+    precondition(segments.map(\.count) == [1, 2], "automatic control must break the fan output line")
 
     let graph: TemperatureHistoryView = require(find(TemperatureHistoryView.self, in: viewController.view), "history graph")
+    controller.temperatureHistory = [TemperatureSample(
+        timestamp: Date().timeIntervalSince1970,
+        temperature: 50
+    )]
+    viewController.refresh()
+    precondition(
+        (graph.accessibilityValue() as? String)?.contains("fan output not recorded") == true,
+        "automatic history must explain missing fan output"
+    )
     let range = require(
         controls(NSSegmentedControl.self, labelled: "History time range", in: viewController.view).first,
         "history time range"
@@ -357,6 +382,21 @@ private func mouseEvent(_ type: NSEvent.EventType, at location: CGPoint, in wind
         clickCount: 1,
         pressure: 1
     ), "mouse event")
+}
+
+private func keyEvent(keyCode: UInt16) -> NSEvent {
+    require(NSEvent.keyEvent(
+        with: .keyDown,
+        location: .zero,
+        modifierFlags: [],
+        timestamp: 0,
+        windowNumber: 0,
+        context: nil,
+        characters: "",
+        charactersIgnoringModifiers: "",
+        isARepeat: false,
+        keyCode: keyCode
+    ), "key event")
 }
 
 private final class TestController: FanCurveControlling {

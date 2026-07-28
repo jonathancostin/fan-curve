@@ -5,6 +5,7 @@ Fan Curve is a small macOS menu-bar app that adjusts fan speed from CPU temperat
 ## What you can do
 
 - Set a fan curve by dragging points or entering exact values.
+- Keep three saved curves and switch between them.
 - See CPU temperature, current fan speed, target speed, and fan mode.
 - Check recent temperature and fan output on the same chart.
 - Copy a curve as JSON and paste it back later.
@@ -50,7 +51,7 @@ fan-curve-helper install
 1. Open Fan Curve from the Applications folder or with `open -a "Fan Curve"`.
 2. Check the support label and detected fan count.
 3. Leave the default curve in place for the first test.
-4. Turn on **Enable curve**.
+4. Turn on **Use fan curve**.
 5. Check that the menu says **Active** and that each fan shows a live speed.
 6. Turn the curve off and make sure the menu returns to **Automatic**.
 
