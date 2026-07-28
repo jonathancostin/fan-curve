@@ -38,7 +38,7 @@ jobs:
 
   app-actions:
     name: App user actions
-    runs-on: macos-15
+    runs-on: ${{ fromJSON(vars.MACOS_RUNNER || '"macos-15"') }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -47,7 +47,8 @@ jobs:
       - run: swift build --target FanCurveAppCheck -Xswiftc -strict-concurrency=complete -Xswiftc -warnings-as-errors
       - run: swift run FanCurveAppCheck
       - run: swift build -c release --triple x86_64-apple-macosx13.0
-      - run: sudo /usr/sbin/softwareupdate --install-rosetta --agree-to-license
+      - if: ${{ runner.environment == 'github-hosted' }}
+        run: sudo /usr/sbin/softwareupdate --install-rosetta --agree-to-license
       - run: arch -x86_64 .build/out/Products/Release/FanCurveCheck
       - run: arch -x86_64 .build/out/Products/Release/FanCurveAppCheck
 
