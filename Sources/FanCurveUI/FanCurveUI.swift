@@ -38,6 +38,7 @@ package protocol FanCurveControlling: AnyObject {
     func shutdown()
 }
 
+@MainActor
 package protocol SystemActions {
     var launchAtLoginRequested: Bool { get }
     func confirmUnverifiedControl() -> Bool
@@ -79,12 +80,15 @@ package final class CurveView: NSView {
         didSet {
             if let selectedIndex, !points.indices.contains(selectedIndex) { self.selectedIndex = nil }
             needsDisplay = true
+            refreshAccessibilityValue()
         }
     }
     var currentTemperature: Double? { didSet { needsDisplay = true } }
     var onChange: (([CurvePoint]) -> Void)?
     var onSelectionChange: (() -> Void)?
-    private var selectedIndex: Int?
+    private var selectedIndex: Int? {
+        didSet { refreshAccessibilityValue() }
+    }
 
     var canAddPoint: Bool { FanCurve.addingPoint(to: points) != nil }
     var canDeletePoint: Bool { selectedIndex != nil && points.count > FanCurve.minimumPointCount }
@@ -100,6 +104,7 @@ package final class CurveView: NSView {
         layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
         setAccessibilityRole(.group)
         setAccessibilityLabel("Temperature to fan speed graph. Drag a point or use arrow keys.")
+        refreshAccessibilityValue()
     }
 
     package required init?(coder: NSCoder) { nil }
@@ -116,9 +121,15 @@ package final class CurveView: NSView {
     package override func mouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)
         let location = convert(event.locationInWindow, from: nil)
-        selectedIndex = points.indices.min { distance(position(points[$0]), location) < distance(position(points[$1]), location) }
+        guard let index = points.indices.min(by: {
+            distance(position(points[$0]), location) < distance(position(points[$1]), location)
+        }), distance(position(points[index]), location) <= 12 else {
+            selectedIndex = nil
+            onSelectionChange?()
+            return
+        }
+        selectedIndex = index
         onSelectionChange?()
-        updateSelected(at: location)
     }
 
     package override func mouseDragged(with event: NSEvent) {
@@ -149,6 +160,9 @@ package final class CurveView: NSView {
     }
 
     package override func keyDown(with event: NSEvent) {
+        guard (123...126).contains(Int(event.keyCode)) else {
+            return super.keyDown(with: event)
+        }
         guard let index = selectedIndex ?? points.indices.min(by: { points[$0].temperature < points[$1].temperature }) else {
             super.keyDown(with: event)
             return
@@ -162,7 +176,7 @@ package final class CurveView: NSView {
         case 124: updateSelected { $0.temperature += 1 }
         case 125: updateSelected { $0.percentage -= 1 }
         case 126: updateSelected { $0.percentage += 1 }
-        default: return super.keyDown(with: event)
+        default: break
         }
     }
 
@@ -185,7 +199,7 @@ package final class CurveView: NSView {
         var updated = points
         change(&updated[index])
         clampPoint(index, in: &updated)
-        guard FanCurve.isValid(updated) else { return }
+        guard FanCurve.isValid(updated), updated != points else { return }
         points = updated
         onChange?(updated)
     }
@@ -207,6 +221,13 @@ package final class CurveView: NSView {
     }
 
     private func distance(_ a: CGPoint, _ b: CGPoint) -> CGFloat { hypot(a.x - b.x, a.y - b.y) }
+
+    private func refreshAccessibilityValue() {
+        let value = selectedPoint.map {
+            "\(Int($0.temperature)) degrees Celsius, \(Int($0.percentage)) percent"
+        } ?? "\(points.count) points; no point selected"
+        setAccessibilityValue(value)
+    }
 
     private func drawGrid() {
         let attributes: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 9), .foregroundColor: NSColor.secondaryLabelColor]
@@ -309,18 +330,19 @@ package final class TemperatureHistoryView: NSView {
         path.stroke()
 
         if showsFanOutput {
-            let fanPath = NSBezierPath()
-            fanPath.lineWidth = 2
-            fanPath.lineJoinStyle = .round
-            for (index, sample) in visibleSamples.compactMap({ sample in
-                sample.fanPercentage.map { (timestamp: sample.timestamp, percentage: $0) }
-            }).enumerated() {
-                let x = plot.minX + (sample.timestamp - start) / duration * plot.width
-                let y = plot.maxY - min(1, max(0, CGFloat(sample.percentage) / 100)) * plot.height
-                index == 0 ? fanPath.move(to: CGPoint(x: x, y: y)) : fanPath.line(to: CGPoint(x: x, y: y))
+            for segment in Self.fanOutputSegments(in: visibleSamples) {
+                let fanPath = NSBezierPath()
+                fanPath.lineWidth = 2
+                fanPath.lineJoinStyle = .round
+                for (index, sample) in segment.enumerated() {
+                    guard let percentage = sample.fanPercentage else { continue }
+                    let x = plot.minX + (sample.timestamp - start) / duration * plot.width
+                    let y = plot.maxY - min(1, max(0, CGFloat(percentage) / 100)) * plot.height
+                    index == 0 ? fanPath.move(to: CGPoint(x: x, y: y)) : fanPath.line(to: CGPoint(x: x, y: y))
+                }
+                NSColor.systemBlue.setStroke()
+                fanPath.stroke()
             }
-            NSColor.systemBlue.setStroke()
-            fanPath.stroke()
         }
 
         ("Temperature" as NSString).draw(at: CGPoint(x: plot.minX, y: 1), withAttributes: attributes.merging([.foregroundColor: NSColor.systemOrange]) { _, new in new })
@@ -340,6 +362,10 @@ package final class TemperatureHistoryView: NSView {
         duration < 60 * 60 ? "\(Int(duration / 60))m" : "\(Int(duration / 60 / 60))h"
     }
 
+    package static func fanOutputSegments(in samples: [TemperatureSample]) -> [[TemperatureSample]] {
+        samples.split { $0.fanPercentage == nil }.map(Array.init)
+    }
+
     private func refresh() {
         needsDisplay = true
         let end = Date().timeIntervalSince1970
@@ -352,12 +378,15 @@ package final class TemperatureHistoryView: NSView {
             return
         }
         let temperature = String(format: "Temperature %.1f degrees Celsius; range %.1f to %.1f", latest.temperature, minimum, maximum)
-        let fanOutput = showsFanOutput ? latest.fanPercentage.map { "; fan output \($0) percent" } ?? "" : "; fan output hidden"
+        let fanOutput = showsFanOutput
+            ? latest.fanPercentage.map { "; fan output \($0) percent" } ?? "; fan output not recorded"
+            : "; fan output hidden"
         setAccessibilityValue(temperature + fanOutput)
     }
 }
 
-package final class MainViewController: NSViewController, NSTextFieldDelegate {
+@MainActor
+package final class MainViewController: NSViewController {
     private let controller: FanCurveControlling
     private let systemActions: SystemActions
     private let averageValue = NSTextField(labelWithString: "—")
@@ -385,9 +414,9 @@ package final class MainViewController: NSViewController, NSTextFieldDelegate {
     private let resumeToggle = NSSwitch()
     private let hardwareLabel = NSTextField(labelWithString: "Checking hardware…")
 
-    package init(controller: FanCurveControlling, systemActions: SystemActions = LiveSystemActions()) {
+    package init(controller: FanCurveControlling, systemActions: SystemActions? = nil) {
         self.controller = controller
-        self.systemActions = systemActions
+        self.systemActions = systemActions ?? LiveSystemActions()
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -402,13 +431,13 @@ package final class MainViewController: NSViewController, NSTextFieldDelegate {
         }
         graph.onSelectionChange = { [weak self] in self?.refreshPointControls() }
         graph.translatesAutoresizingMaskIntoConstraints = false
-        graph.heightAnchor.constraint(equalToConstant: 225).isActive = true
+        graph.heightAnchor.constraint(equalToConstant: 200).isActive = true
         profileControl.selectedSegment = controller.selectedProfile
         profileControl.target = self
         profileControl.action = #selector(selectProfile)
         profileControl.setAccessibilityLabel("Saved profile")
         historyGraph.translatesAutoresizingMaskIntoConstraints = false
-        historyGraph.heightAnchor.constraint(equalToConstant: 90).isActive = true
+        historyGraph.heightAnchor.constraint(equalToConstant: 80).isActive = true
         historyRange.selectedSegment = 1
         historyRange.target = self
         historyRange.action = #selector(changeHistoryRange)
@@ -431,11 +460,9 @@ package final class MainViewController: NSViewController, NSTextFieldDelegate {
             field.controlSize = .small
             field.widthAnchor.constraint(equalToConstant: 44).isActive = true
         }
-        temperatureField.delegate = self
         temperatureField.target = self
         temperatureField.action = #selector(changePointTemperature)
         temperatureField.setAccessibilityLabel("Selected point temperature in degrees Celsius")
-        percentageField.delegate = self
         percentageField.target = self
         percentageField.action = #selector(changePointPercentage)
         percentageField.setAccessibilityLabel("Selected point fan percentage")
@@ -528,7 +555,7 @@ package final class MainViewController: NSViewController, NSTextFieldDelegate {
 
         let stack = NSStackView(views: [header, fansLabel, profileRow, graph, pointEditRow, pointRow, historyControls, historyGraph, controlRow, loginRow, resumeRow, statusRow, quitRow])
         stack.orientation = .vertical
-        stack.spacing = 10
+        stack.spacing = 8
         stack.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(stack)
         NSLayoutConstraint.activate([
@@ -623,16 +650,6 @@ package final class MainViewController: NSViewController, NSTextFieldDelegate {
         controller.setResumeAfterLaunch(resumeToggle.state == .on)
     }
 
-    package func controlTextDidChange(_ notification: Notification) {
-        guard let field = notification.object as? NSTextField,
-              let value = pointValue(from: field) else { return }
-        if field === temperatureField {
-            graph.updateSelected(temperature: value)
-        } else if field === percentageField {
-            graph.updateSelected(percentage: value)
-        }
-    }
-
     @objc private func toggleLaunchAtLogin() {
         do {
             let enabled = loginToggle.state == .on
@@ -679,6 +696,7 @@ package final class MainViewController: NSViewController, NSTextFieldDelegate {
     }
 }
 
+@MainActor
 package final class AppDelegate: NSObject, NSApplicationDelegate {
     private let controller: FanCurveControlling
     private let systemActions: SystemActions
@@ -688,12 +706,12 @@ package final class AppDelegate: NSObject, NSApplicationDelegate {
 
     package init(
         controller: FanCurveControlling,
-        systemActions: SystemActions = LiveSystemActions(),
-        popover: NSPopover = NSPopover()
+        systemActions: SystemActions? = nil,
+        popover: NSPopover? = nil
     ) {
         self.controller = controller
-        self.systemActions = systemActions
-        self.popover = popover
+        self.systemActions = systemActions ?? LiveSystemActions()
+        self.popover = popover ?? NSPopover()
     }
 
     package func applicationDidFinishLaunching(_ notification: Notification) {

@@ -29,7 +29,7 @@ swift run FanCurveProbe > fan-curve-report.json
 From an installed app:
 
 ```sh
-/Applications/FanCurve.app/Contents/Resources/FanCurveProbe > fan-curve-report.json
+"/Applications/Fan Curve.app/Contents/Resources/FanCurveProbe" > fan-curve-report.json
 ```
 
 Review the file before sharing it. A useful report has a model and chip, an app version, at least one CPU sensor, valid fan ranges, and `fanControlSupported` set to `true`. `helperMatchesBundle` must be `true` before a device test; reinstall the helper if it is `false`.

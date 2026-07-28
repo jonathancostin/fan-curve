@@ -54,11 +54,13 @@ final class FanController: NSObject, UNUserNotificationCenterDelegate {
             points = FanCurve.defaultPoints
         }
         temperatureHistory = UserDefaults.standard.data(forKey: Self.historyKey)
-            .flatMap { try? JSONDecoder().decode([TemperatureSample].self, from: $0) } ?? []
+            .flatMap(TemperatureHistory.decode) ?? []
         super.init()
         UNUserNotificationCenter.current().delegate = self
 
-        timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.poll() }
+        let timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in self?.poll() }
+        self.timer = timer
+        RunLoop.main.add(timer, forMode: .common)
         let notifications = NSWorkspace.shared.notificationCenter
         workspaceObservers.append(notifications.addObserver(
             forName: NSWorkspace.willSleepNotification,
@@ -75,7 +77,7 @@ final class FanController: NSObject, UNUserNotificationCenterDelegate {
 
     func updatePoints(_ newPoints: [CurvePoint]) {
         let sorted = newPoints.sorted { $0.temperature < $1.temperature }
-        guard FanCurve.isValid(sorted) else { return }
+        guard FanCurve.isValid(sorted), sorted != points else { return }
         points = sorted
         if let data = try? JSONEncoder().encode(points) {
             UserDefaults.standard.set(data, forKey: Self.pointsKey(for: selectedProfile))
@@ -151,7 +153,7 @@ final class FanController: NSObject, UNUserNotificationCenterDelegate {
             _ = activeControlTransition.shouldNotify(isEnabled: false, isActive: false)
         }
         if enabled {
-            guard averageTemperature != nil else {
+            guard let averageTemperature else {
                 isEnabled = false
                 status = "No CPU temperature reading"
                 onUpdate?()
@@ -175,6 +177,7 @@ final class FanController: NSObject, UNUserNotificationCenterDelegate {
                 onUpdate?()
                 return
             }
+            outputPercentage = Int(FanCurve(points: points).percentage(at: averageTemperature).rounded())
             writeState(enabled: true)
             guard isEnabled else { onUpdate?(); return }
             controlConfirmation.start(at: ProcessInfo.processInfo.systemUptime)
@@ -205,15 +208,12 @@ final class FanController: NSObject, UNUserNotificationCenterDelegate {
     }
 
     var canInstallHelper: Bool {
-        bundledResource("install-helper.sh") != nil && !isBusy
+        supportLevel != .unsupported && bundledResource("install-helper.sh") != nil && !isBusy
     }
 
     var helperNeedsUpdate: Bool {
         guard helperInstalled, let bundledHelper = bundledResource("FanCurveHelper") else { return false }
-        return HelperInstallation.requiresUpdate(
-            bundledSHA256: HelperInstallation.sha256(bundledHelper.path),
-            installedSHA256: HelperInstallation.sha256(HelperInstallation.helperPath)
-        )
+        return !HelperInstallation.isCurrent(bundledHelperPath: bundledHelper.path)
     }
 
     var canCopySupportReport: Bool {
@@ -264,9 +264,10 @@ final class FanController: NSObject, UNUserNotificationCenterDelegate {
             }
             DispatchQueue.main.async {
                 NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(report, forType: .string)
                 self.isBusy = false
-                self.status = "Support report copied"
+                self.status = NSPasteboard.general.setString(report, forType: .string)
+                    ? "Support report copied"
+                    : "Could not copy support report"
                 self.poll()
                 self.onUpdate?()
             }
@@ -276,6 +277,8 @@ final class FanController: NSObject, UNUserNotificationCenterDelegate {
     func shutdown() {
         timer?.invalidate()
         workspaceObservers.forEach(NSWorkspace.shared.notificationCenter.removeObserver)
+        wakeRecovery.cancelResume()
+        launchRecovery.cancelResume()
         if isEnabled {
             isEnabled = false
             controlConfirmation.stop()
@@ -346,7 +349,6 @@ final class FanController: NSObject, UNUserNotificationCenterDelegate {
         worker.async { [weak self] in
             guard let self else { return }
             let availableKeys = self.availableSMCKeys ?? Set(SMC.shared.getAllKeys())
-            if !availableKeys.isEmpty { self.availableSMCKeys = availableKeys }
             let discoveredFans = self.fanRanges ?? MacHardware.fanRanges { SMC.shared.getValue($0) }
             let fanTelemetry = discoveredFans.map { fan in
                 FanTelemetry(
@@ -370,6 +372,7 @@ final class FanController: NSObject, UNUserNotificationCenterDelegate {
             let average = MacHardware.averageCPUTemperature(availableKeys: availableKeys) {
                 SMC.shared.getValue($0)
             }
+            if average != nil { self.availableSMCKeys = availableKeys }
             let active = Self.controlIsActive(
                 expectedPercentage: expectedPercentage,
                 acknowledgementPath: acknowledgementPath,
@@ -430,9 +433,12 @@ final class FanController: NSObject, UNUserNotificationCenterDelegate {
                             self.status = active ? "Curve active" : "Waiting for background helper…"
                         }
                     }
-                    self.refreshOutput()
+                    self.refreshOutput(advanceSmoothing: true)
                     if let average {
-                        self.recordTemperature(average, fanPercentage: self.outputPercentage)
+                        self.recordTemperature(
+                            average,
+                            fanPercentage: self.isEnabled && active ? self.outputPercentage : nil
+                        )
                     }
                     self.onUpdate?()
                 }
@@ -459,7 +465,7 @@ final class FanController: NSObject, UNUserNotificationCenterDelegate {
         onUpdate?()
     }
 
-    private func recordTemperature(_ temperature: Double, fanPercentage: Int) {
+    private func recordTemperature(_ temperature: Double, fanPercentage: Int?) {
         let updated = TemperatureHistory.appending(
             temperature,
             fanPercentage: fanPercentage,
@@ -495,12 +501,12 @@ final class FanController: NSObject, UNUserNotificationCenterDelegate {
         fans: [FanRange],
         fanTelemetry: [FanTelemetry]
     ) -> Bool {
-        var info = stat()
-        guard lstat(acknowledgementPath, &info) == 0,
-              (info.st_mode & S_IFMT) == S_IFREG,
-              info.st_uid == 0,
-              (info.st_mode & 0o022) == 0,
-              let data = FileManager.default.contents(atPath: acknowledgementPath),
+        guard let data = SecureRegularFile.read(
+                  acknowledgementPath,
+                  ownerUID: 0,
+                  forbiddenPermissions: 0o022,
+                  maxSize: 4_096
+              ),
               let acknowledgement = try? JSONDecoder().decode(ControlAcknowledgement.self, from: data),
               ControlPolicy.acknowledgementMatches(
                   acknowledgement,
@@ -526,14 +532,16 @@ final class FanController: NSObject, UNUserNotificationCenterDelegate {
         #endif
     }
 
-    private func refreshOutput() {
+    private func refreshOutput(advanceSmoothing: Bool = false) {
         guard let averageTemperature else {
             outputPercentage = 0
             return
         }
         let target = Int(FanCurve(points: points).percentage(at: averageTemperature).rounded())
-        outputPercentage = isEnabled ? FanSmoothing.next(current: outputPercentage, target: target) : target
-        if isEnabled { writeState(enabled: true) }
+        outputPercentage = isEnabled
+            ? FanSmoothing.next(current: outputPercentage, target: target, advance: advanceSmoothing)
+            : target
+        if isEnabled, advanceSmoothing { writeState(enabled: true) }
     }
 
     private func writeState(enabled: Bool) {

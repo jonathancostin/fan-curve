@@ -43,8 +43,13 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-      - run: swift build --product FanCurveApp
+      - run: swift build -Xswiftc -warnings-as-errors
+      - run: swift build --target FanCurveAppCheck -Xswiftc -strict-concurrency=complete -Xswiftc -warnings-as-errors
       - run: swift run FanCurveAppCheck
+      - run: swift build -c release --triple x86_64-apple-macosx13.0
+      - run: sudo /usr/sbin/softwareupdate --install-rosetta --agree-to-license
+      - run: arch -x86_64 .build/out/Products/Release/FanCurveCheck
+      - run: arch -x86_64 .build/out/Products/Release/FanCurveAppCheck
 
   release:
     needs: [test, app-actions]
@@ -115,6 +120,8 @@ jobs:
           cd "$RUNNER_TEMP/homebrew-tap"
           sed -i -E "s/^  version \".*\"/  version \"$VERSION\"/" Casks/fan-curve.rb
           sed -i -E "s/^  sha256 \".*\"/  sha256 \"$sha256\"/" Casks/fan-curve.rb
+          sed -i -E 's/^  desc ".*"/  desc "Temperature-based fan controller for supported Macs"/' Casks/fan-curve.rb
+          sed -i -E '/^  depends_on arch: :arm64$/d' Casks/fan-curve.rb
           git diff --quiet && exit
           git config user.name github-actions\[bot\]
           git config user.email 41898282+github-actions\[bot\]@users.noreply.github.com
