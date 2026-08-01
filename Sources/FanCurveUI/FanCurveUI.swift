@@ -289,9 +289,27 @@ package final class CurveView: NSView {
 }
 
 package final class TemperatureHistoryView: NSView {
+    private struct TelemetryMetric {
+        let title: String
+        let value: String
+        let detail: String
+        let color: NSColor
+    }
+
+    private struct HistorySummary {
+        let samples: [TemperatureSample]
+        let minimum: Double?
+        let maximum: Double?
+        let average: Double?
+        let peak: TemperatureSample?
+    }
+
     var samples: [TemperatureSample] = [] {
         didSet { refresh() }
     }
+    package var currentTemperature: Double? { didSet { refresh() } }
+    package var currentFanPercentage = 0 { didSet { refresh() } }
+    package var fanTelemetry: [FanTelemetry] = [] { didSet { refresh() } }
     package var duration: TimeInterval = 60 * 60 { didSet { refresh() } }
     package var showsFanOutput = true { didSet { refresh() } }
     package override var isFlipped: Bool { true }
@@ -308,20 +326,30 @@ package final class TemperatureHistoryView: NSView {
 
     package override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
-        let plot = bounds.insetBy(dx: 34, dy: 16)
-        let attributes: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 9), .foregroundColor: NSColor.secondaryLabelColor]
+        drawTelemetryStrip()
+        let plot = CGRect(x: 34, y: 70, width: bounds.width - 68, height: bounds.height - 108)
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 9),
+            .foregroundColor: NSColor.secondaryLabelColor
+        ]
         let end = Date().timeIntervalSince1970
-        let start = end - duration
-        let visibleSamples = samples.filter { (start...end).contains($0.timestamp) }
-        guard visibleSamples.count > 1 else {
-            ("Collecting history…" as NSString).draw(at: CGPoint(x: 12, y: bounds.midY - 6), withAttributes: attributes)
+        let summary = historySummary(at: end)
+        drawGrid(in: plot)
+        drawPlotLabels(in: plot, attributes: attributes)
+        guard summary.samples.count > 1 else {
+            ("Collecting history…" as NSString).draw(
+                at: CGPoint(x: plot.midX - 38, y: plot.midY - 6),
+                withAttributes: attributes
+            )
+            drawHistoryFooter(summary, end: end)
             return
         }
 
         let path = NSBezierPath()
         path.lineWidth = 2
         path.lineJoinStyle = .round
-        for (index, sample) in visibleSamples.enumerated() {
+        let start = end - duration
+        for (index, sample) in summary.samples.enumerated() {
             let x = plot.minX + (sample.timestamp - start) / duration * plot.width
             let y = plot.maxY - min(1, max(0, (sample.temperature - 20) / 90)) * plot.height
             index == 0 ? path.move(to: CGPoint(x: x, y: y)) : path.line(to: CGPoint(x: x, y: y))
@@ -330,7 +358,7 @@ package final class TemperatureHistoryView: NSView {
         path.stroke()
 
         if showsFanOutput {
-            for segment in Self.fanOutputSegments(in: visibleSamples) {
+            for segment in Self.fanOutputSegments(in: summary.samples) {
                 let fanPath = NSBezierPath()
                 fanPath.lineWidth = 2
                 fanPath.lineJoinStyle = .round
@@ -345,17 +373,7 @@ package final class TemperatureHistoryView: NSView {
             }
         }
 
-        ("Temperature" as NSString).draw(at: CGPoint(x: plot.minX, y: 1), withAttributes: attributes.merging([.foregroundColor: NSColor.systemOrange]) { _, new in new })
-        ("110°C" as NSString).draw(at: CGPoint(x: 2, y: plot.minY), withAttributes: attributes)
-        ("20°C" as NSString).draw(at: CGPoint(x: 7, y: plot.maxY - 11), withAttributes: attributes)
-        if showsFanOutput {
-            ("Fan output" as NSString).draw(at: CGPoint(x: plot.minX + 78, y: 1), withAttributes: attributes.merging([.foregroundColor: NSColor.systemBlue]) { _, new in new })
-            ("100%" as NSString).draw(at: CGPoint(x: plot.maxX + 4, y: plot.minY), withAttributes: attributes)
-            ("0%" as NSString).draw(at: CGPoint(x: plot.maxX + 4, y: plot.maxY - 11), withAttributes: attributes)
-        }
-        ("\(durationText) ago" as NSString).draw(at: CGPoint(x: plot.minX, y: plot.maxY - 11), withAttributes: attributes)
-        let now = "now" as NSString
-        now.draw(at: CGPoint(x: plot.maxX - now.size(withAttributes: attributes).width, y: plot.maxY - 11), withAttributes: attributes)
+        drawHistoryFooter(summary, end: end)
     }
 
     private var durationText: String {
@@ -366,22 +384,185 @@ package final class TemperatureHistoryView: NSView {
         samples.split { $0.fanPercentage == nil }.map(Array.init)
     }
 
+    private func drawTelemetryStrip() {
+        let metricWidth = bounds.width / 4
+        let values = [
+            TelemetryMetric(
+                title: "CPU",
+                value: currentTemperature.map { String(format: "%.1f°C", $0) } ?? "—",
+                detail: "live average",
+                color: .systemOrange
+            ),
+            TelemetryMetric(title: "OUTPUT", value: "\(currentFanPercentage)%", detail: "curve output", color: .systemBlue),
+            fanMetric(id: 0, color: .systemGreen),
+            fanMetric(id: 1, color: .systemPurple)
+        ]
+        for (index, metric) in values.enumerated() {
+            let x = CGFloat(index) * metricWidth
+            if index > 0 {
+                NSColor.separatorColor.withAlphaComponent(0.65).setStroke()
+                let separator = NSBezierPath()
+                separator.move(to: CGPoint(x: x, y: 10))
+                separator.line(to: CGPoint(x: x, y: 48))
+                separator.stroke()
+            }
+            (metric.title as NSString).draw(at: CGPoint(x: x + 8, y: 8), withAttributes: [
+                .font: NSFont.systemFont(ofSize: 9, weight: .medium),
+                .foregroundColor: NSColor.secondaryLabelColor
+            ])
+            (metric.value as NSString).draw(at: CGPoint(x: x + 8, y: 25), withAttributes: [
+                .font: NSFont.monospacedDigitSystemFont(ofSize: 14, weight: .semibold),
+                .foregroundColor: metric.color
+            ])
+            (metric.detail as NSString).draw(at: CGPoint(x: x + 8, y: 42), withAttributes: [
+                .font: NSFont.systemFont(ofSize: 9),
+                .foregroundColor: NSColor.secondaryLabelColor
+            ])
+        }
+    }
+
+    private func drawGrid(in plot: CGRect) {
+        NSColor.separatorColor.withAlphaComponent(0.32).setStroke()
+        for index in 0...4 {
+            let y = plot.minY + CGFloat(index) / 4 * plot.height
+            let line = NSBezierPath()
+            line.move(to: CGPoint(x: plot.minX, y: y))
+            line.line(to: CGPoint(x: plot.maxX, y: y))
+            line.stroke()
+        }
+        for index in 0...6 {
+            let x = plot.minX + CGFloat(index) / 6 * plot.width
+            let line = NSBezierPath()
+            line.move(to: CGPoint(x: x, y: plot.minY))
+            line.line(to: CGPoint(x: x, y: plot.maxY))
+            line.stroke()
+        }
+    }
+
+    private func drawPlotLabels(in plot: CGRect, attributes: [NSAttributedString.Key: Any]) {
+        ("TEMP °C" as NSString).draw(
+            at: CGPoint(x: plot.minX, y: 56),
+            withAttributes: attributes.merging([.foregroundColor: NSColor.systemOrange]) { _, new in new }
+        )
+        ("110°C" as NSString).draw(at: CGPoint(x: 2, y: plot.minY), withAttributes: attributes)
+        ("20°C" as NSString).draw(at: CGPoint(x: 7, y: plot.maxY - 11), withAttributes: attributes)
+        if showsFanOutput {
+            let fanLabel = "OUTPUT %" as NSString
+            fanLabel.draw(
+                at: CGPoint(x: plot.maxX - fanLabel.size(withAttributes: attributes).width, y: 56),
+                withAttributes: attributes.merging([.foregroundColor: NSColor.systemBlue]) { _, new in new }
+            )
+            ("100%" as NSString).draw(at: CGPoint(x: plot.maxX + 4, y: plot.minY), withAttributes: attributes)
+            ("0%" as NSString).draw(at: CGPoint(x: plot.maxX + 4, y: plot.maxY - 11), withAttributes: attributes)
+        }
+        ("\(durationText) ago" as NSString).draw(at: CGPoint(x: plot.minX, y: plot.maxY - 11), withAttributes: attributes)
+        let now = "now" as NSString
+        now.draw(at: CGPoint(x: plot.maxX - now.size(withAttributes: attributes).width, y: plot.maxY - 11), withAttributes: attributes)
+    }
+
+    private func drawHistoryFooter(_ summary: HistorySummary, end: TimeInterval) {
+        let separatorY = bounds.height - 28
+        NSColor.separatorColor.withAlphaComponent(0.65).setStroke()
+        let separator = NSBezierPath()
+        separator.move(to: CGPoint(x: 8, y: separatorY))
+        separator.line(to: CGPoint(x: bounds.width - 8, y: separatorY))
+        separator.stroke()
+
+        let range = summary.minimum.flatMap { minimum in
+            summary.maximum.map { maximum in String(format: "%.1f–%.1f°C", minimum, maximum) }
+        } ?? "—"
+        let averageText = summary.average.map { String(format: "%.1f°C", $0) } ?? "—"
+        let peakText = summary.peak.map { relativeTime(end - $0.timestamp) } ?? "—"
+        let footer: [(String, String)] = [("RANGE", range), ("AVG", averageText), ("PEAK", peakText)]
+        let footerWidth = (bounds.width - 16) / 3
+        for (index, item) in footer.enumerated() {
+            let x = 8 + CGFloat(index) * footerWidth
+            (item.0 as NSString).draw(at: CGPoint(x: x, y: separatorY + 8), withAttributes: [
+                .font: NSFont.systemFont(ofSize: 9, weight: .medium),
+                .foregroundColor: NSColor.secondaryLabelColor
+            ])
+            let value = item.1 as NSString
+            let attributes: [NSAttributedString.Key: Any] = [
+                .font: NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .medium),
+                .foregroundColor: NSColor.labelColor
+            ]
+            value.draw(
+                at: CGPoint(x: x + footerWidth - value.size(withAttributes: attributes).width - 4, y: separatorY + 7),
+                withAttributes: attributes
+            )
+        }
+    }
+
+    private func fanMetric(id: Int, color: NSColor) -> TelemetryMetric {
+        guard let fan = fanTelemetry.first(where: { $0.id == id }) else {
+            return TelemetryMetric(title: "FAN \(id + 1) RPM", value: "—", detail: "not detected", color: color)
+        }
+        let live = fan.actualRPM.map {
+            NumberFormatter.localizedString(from: NSNumber(value: $0.rounded()), number: .decimal)
+        } ?? "—"
+        let target = fan.targetRPM.map {
+            NumberFormatter.localizedString(from: NSNumber(value: $0.rounded()), number: .decimal)
+        } ?? "—"
+        return TelemetryMetric(
+            title: "FAN \(fan.id + 1) RPM",
+            value: live,
+            detail: "→ \(target) · \(fan.modeText.lowercased())",
+            color: color
+        )
+    }
+
+    private func relativeTime(_ interval: TimeInterval) -> String {
+        let seconds = max(0, interval)
+        if seconds < 60 { return "now" }
+        if seconds < 60 * 60 { return "\(Int(seconds / 60))m ago" }
+        return "\(Int(seconds / 60 / 60))h ago"
+    }
+
     private func refresh() {
         needsDisplay = true
         let end = Date().timeIntervalSince1970
-        let visibleSamples = samples.filter { (end - duration...end).contains($0.timestamp) }
+        let summary = historySummary(at: end)
         setAccessibilityLabel("History for the last \(durationText)")
-        guard let latest = visibleSamples.last,
-              let minimum = visibleSamples.map(\.temperature).min(),
-              let maximum = visibleSamples.map(\.temperature).max() else {
-            setAccessibilityValue("No samples yet")
+        guard let latest = summary.samples.last,
+              let minimum = summary.minimum,
+              let maximum = summary.maximum,
+              let average = summary.average else {
+            setAccessibilityValue("No samples yet" + telemetryAccessibilityValue)
             return
         }
-        let temperature = String(format: "Temperature %.1f degrees Celsius; range %.1f to %.1f", latest.temperature, minimum, maximum)
+        let temperature = String(
+            format: "Temperature %.1f degrees Celsius; range %.1f to %.1f; average %.1f",
+            latest.temperature,
+            minimum,
+            maximum,
+            average
+        )
         let fanOutput = showsFanOutput
             ? latest.fanPercentage.map { "; fan output \($0) percent" } ?? "; fan output not recorded"
             : "; fan output hidden"
-        setAccessibilityValue(temperature + fanOutput)
+        setAccessibilityValue(temperature + fanOutput + telemetryAccessibilityValue)
+    }
+
+    private var telemetryAccessibilityValue: String {
+        let current = currentTemperature.map {
+            String(format: "; live CPU %.1f degrees Celsius; curve output %d percent", $0, currentFanPercentage)
+        } ?? "; live CPU unavailable; curve output \(currentFanPercentage) percent"
+        let fans = fanTelemetry.sorted { $0.id < $1.id }.map { fan in
+            "; fan \(fan.id + 1) live \(fan.actualRPMText), target \(fan.targetRPMText), \(fan.modeText)"
+        }.joined()
+        return current + fans
+    }
+
+    private func historySummary(at end: TimeInterval) -> HistorySummary {
+        let visibleSamples = samples.filter { (end - duration...end).contains($0.timestamp) }
+        let temperatures = visibleSamples.map(\.temperature)
+        return HistorySummary(
+            samples: visibleSamples,
+            minimum: temperatures.min(),
+            maximum: temperatures.max(),
+            average: temperatures.isEmpty ? nil : temperatures.reduce(0, +) / Double(temperatures.count),
+            peak: visibleSamples.max { $0.temperature < $1.temperature }
+        )
     }
 }
 
@@ -389,9 +570,6 @@ package final class TemperatureHistoryView: NSView {
 package final class MainViewController: NSViewController {
     private let controller: FanCurveControlling
     private let systemActions: SystemActions
-    private let averageValue = NSTextField(labelWithString: "—")
-    private let outputValue = NSTextField(labelWithString: "0%")
-    private let fansLabel = NSTextField(wrappingLabelWithString: "Checking fans…")
     private let statusLabel = NSTextField(labelWithString: "Apple automatic control")
     private let toggle = NSSwitch()
     private let profileControl = NSSegmentedControl(labels: ["1", "2", "3"], trackingMode: .selectOne, target: nil, action: nil)
@@ -437,7 +615,7 @@ package final class MainViewController: NSViewController {
         profileControl.action = #selector(selectProfile)
         profileControl.setAccessibilityLabel("Saved profile")
         historyGraph.translatesAutoresizingMaskIntoConstraints = false
-        historyGraph.heightAnchor.constraint(equalToConstant: 80).isActive = true
+        historyGraph.heightAnchor.constraint(equalToConstant: 180).isActive = true
         historyRange.selectedSegment = 1
         historyRange.target = self
         historyRange.action = #selector(changeHistoryRange)
@@ -501,19 +679,9 @@ package final class MainViewController: NSViewController {
             copyCurveButton, pasteCurveButton
         ])
 
-        averageValue.font = .systemFont(ofSize: 30, weight: .semibold)
-        outputValue.font = .systemFont(ofSize: 22, weight: .bold)
-        outputValue.textColor = .controlAccentColor
-        outputValue.alignment = .right
-
-        let header = NSStackView(views: [metric("Average CPU", value: averageValue), metric("Fan output", value: outputValue, alignment: .right)])
-        header.distribution = .fillEqually
         let profileLabel = NSTextField(labelWithString: "Profile")
         profileLabel.font = .systemFont(ofSize: 13, weight: .medium)
         let profileRow = NSStackView(views: [profileLabel, NSView(), profileControl])
-        fansLabel.font = .systemFont(ofSize: 11)
-        fansLabel.textColor = .secondaryLabelColor
-
         toggle.target = self
         toggle.action = #selector(toggleControl)
         let toggleLabel = NSTextField(labelWithString: "Use fan curve")
@@ -553,16 +721,16 @@ package final class MainViewController: NSViewController {
             historyLabel, historyRange, NSView(), fanHistoryToggle
         ])
 
-        let stack = NSStackView(views: [header, fansLabel, profileRow, graph, pointEditRow, pointRow, historyControls, historyGraph, controlRow, loginRow, resumeRow, statusRow, quitRow])
+        let stack = NSStackView(views: [profileRow, graph, pointEditRow, pointRow, historyControls, historyGraph, controlRow, loginRow, resumeRow, statusRow, quitRow])
         stack.orientation = .vertical
-        stack.spacing = 8
+        stack.spacing = 7
         stack.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(stack)
         NSLayoutConstraint.activate([
             stack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
             stack.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
-            stack.topAnchor.constraint(equalTo: view.topAnchor, constant: 16),
-            stack.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -14),
+            stack.topAnchor.constraint(equalTo: view.topAnchor, constant: 14),
+            stack.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -12),
             view.widthAnchor.constraint(equalToConstant: 430)
         ])
         refresh()
@@ -570,13 +738,6 @@ package final class MainViewController: NSViewController {
 
     package func refresh() {
         let helperNeedsUpdate = controller.helperNeedsUpdate
-        averageValue.stringValue = controller.averageTemperature.map { String(format: "%.1f°C", $0) } ?? "—"
-        outputValue.stringValue = "\(controller.outputPercentage)%"
-        fansLabel.stringValue = controller.fanTelemetry.isEmpty
-            ? "No fans detected"
-            : controller.fanTelemetry.map {
-                "Fan \($0.id + 1) · Live \($0.actualRPMText) · Target \($0.targetRPMText) · \($0.modeText)"
-            }.joined(separator: "\n")
         statusLabel.stringValue = controller.status
         toggle.state = controller.isEnabled ? .on : .off
         toggle.isEnabled = !controller.isBusy
@@ -598,18 +759,10 @@ package final class MainViewController: NSViewController {
         profileControl.selectedSegment = controller.selectedProfile
         graph.currentTemperature = controller.averageTemperature
         historyGraph.samples = controller.temperatureHistory
+        historyGraph.currentTemperature = controller.averageTemperature
+        historyGraph.currentFanPercentage = controller.outputPercentage
+        historyGraph.fanTelemetry = controller.fanTelemetry
         refreshPointControls()
-    }
-
-    private func metric(_ title: String, value: NSTextField, alignment: NSTextAlignment = .left) -> NSView {
-        let caption = NSTextField(labelWithString: title)
-        caption.font = .systemFont(ofSize: 11)
-        caption.textColor = .secondaryLabelColor
-        caption.alignment = alignment
-        let stack = NSStackView(views: [caption, value])
-        stack.orientation = .vertical
-        stack.alignment = alignment == .right ? .trailing : .leading
-        return stack
     }
 
     @objc private func toggleControl() {

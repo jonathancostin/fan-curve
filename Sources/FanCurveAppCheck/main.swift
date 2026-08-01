@@ -8,7 +8,11 @@ func checkCurveActions() {
     let controller = TestController()
     let viewController = MainViewController(controller: controller, systemActions: TestSystemActions())
     viewController.loadView()
-    precondition(viewController.view.fittingSize.height <= 660, "popover must fit a 768-pixel display with the Dock visible")
+    let fittingHeight = viewController.view.fittingSize.height
+    precondition(
+        fittingHeight <= 660,
+        "popover must fit a 768-pixel display with the Dock visible; got \(fittingHeight)"
+    )
     controller.onUpdate = { viewController.refresh() }
 
     let graph: CurveView = require(find(CurveView.self, in: viewController.view), "curve graph")
@@ -270,14 +274,40 @@ func checkHistoryControls() {
     precondition(segments.map(\.count) == [1, 2], "automatic control must break the fan output line")
 
     let graph: TemperatureHistoryView = require(find(TemperatureHistoryView.self, in: viewController.view), "history graph")
-    controller.temperatureHistory = [TemperatureSample(
-        timestamp: Date().timeIntervalSince1970,
-        temperature: 50
-    )]
+    let now = Date().timeIntervalSince1970
+    controller.averageTemperature = 52.4
+    controller.outputPercentage = 40
+    controller.fanTelemetry = [
+        FanTelemetry(id: 0, actualRPM: 2_231, targetRPM: 2_250, mode: .forced),
+        FanTelemetry(id: 1, actualRPM: 2_184, targetRPM: 2_250, mode: .forced)
+    ]
+    controller.temperatureHistory = [
+        TemperatureSample(timestamp: now - 120, temperature: 48, fanPercentage: 30),
+        TemperatureSample(timestamp: now - 60, temperature: 50, fanPercentage: 35),
+        TemperatureSample(timestamp: now, temperature: 52)
+    ]
     viewController.refresh()
     precondition(
-        (graph.accessibilityValue() as? String)?.contains("fan output not recorded") == true,
+        graph.currentTemperature == 52.4
+            && graph.currentFanPercentage == 40
+            && graph.fanTelemetry == controller.fanTelemetry,
+        "history graph must receive the live telemetry strip values"
+    )
+    let historyDescription = graph.accessibilityValue() as? String
+    precondition(
+        historyDescription?.contains("average 50.0") == true
+            && historyDescription?.contains("fan 1 live 2231 RPM, target 2250 RPM, Forced") == true,
+        "detailed history stats must be available to assistive tools"
+    )
+    precondition(
+        historyDescription?.contains("fan output not recorded") == true,
         "automatic history must explain missing fan output"
+    )
+    controller.fanTelemetry = [FanTelemetry(id: 1, actualRPM: 2_184, targetRPM: 2_250, mode: .forced)]
+    viewController.refresh()
+    precondition(
+        (graph.accessibilityValue() as? String)?.contains("fan 2 live 2184 RPM") == true,
+        "telemetry must use the hardware fan number instead of its array position"
     )
     let range = require(
         controls(NSSegmentedControl.self, labelled: "History time range", in: viewController.view).first,
