@@ -50,6 +50,7 @@ final class FanController: NSObject, UNUserNotificationCenterDelegate {
     private var wakeRecovery = WakeRecovery()
     private var controlConfirmation = ControlConfirmationDeadline()
     private var controlLoopSchedule = ControlLoopSchedule()
+    private var lastTemperatureReadingAt: TimeInterval?
     private var launchRecovery: LaunchRecovery
     private var activeControlTransition = ActiveControlTransition()
     private var availableSMCKeys: Set<String>?
@@ -554,7 +555,19 @@ final class FanController: NSObject, UNUserNotificationCenterDelegate {
                     hasSupportedFans: !fans.isEmpty,
                     helperIsCurrent: helperIsCurrent
                 )
+                let temperatureRate: Double?
+                if let average,
+                   let previousTemperature = self.averageTemperature,
+                   let previousReadingAt = self.lastTemperatureReadingAt {
+                    let elapsed = recordedAt - previousReadingAt
+                    temperatureRate = elapsed > 0
+                        ? (average - previousTemperature) / elapsed
+                        : nil
+                } else {
+                    temperatureRate = nil
+                }
                 self.averageTemperature = average
+                self.lastTemperatureReadingAt = average == nil ? nil : recordedAt
                 self.detectedFanCount = fans.count
                 self.supportLevel = supportLevel
                 self.fanTelemetry = fanTelemetry
@@ -610,7 +623,10 @@ final class FanController: NSObject, UNUserNotificationCenterDelegate {
                             self.status = controlIsCurrent ? "Curve active" : "Waiting for background helper…"
                         }
                     }
-                    self.refreshOutput(advanceSmoothing: true)
+                    self.refreshOutput(
+                        advanceSmoothing: true,
+                        temperatureRate: temperatureRate
+                    )
                     if let average {
                         self.recordTemperature(
                             average,
@@ -825,7 +841,8 @@ final class FanController: NSObject, UNUserNotificationCenterDelegate {
 
     private func refreshOutput(
         advanceSmoothing: Bool = false,
-        writeStateIfEnabled: Bool = false
+        writeStateIfEnabled: Bool = false,
+        temperatureRate: Double? = nil
     ) {
         guard let averageTemperature else {
             outputPercentage = 0
@@ -838,7 +855,8 @@ final class FanController: NSObject, UNUserNotificationCenterDelegate {
             currentPercentage: outputPercentage,
             isEnabled: isEnabled,
             budget: activeBudget,
-            advanceSmoothing: advanceSmoothing
+            advanceSmoothing: advanceSmoothing,
+            temperatureRate: temperatureRate
         )
         outputPercentage = resolution.percentage
         budgetCapped = resolution.budgetCapped

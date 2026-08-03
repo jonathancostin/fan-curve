@@ -486,6 +486,22 @@ public enum FanSmoothing {
     public static let defaultRiseLimit = 2
     public static let defaultFallLimit = 1
     public static let defaultDeadband = 2
+    public static let acceleratedRiseLimit = 8
+    public static let acceleratedFallLimit = 4
+    public static let accelerationThreshold = 1.5
+
+    public enum Acceleration: Equatable, Sendable {
+        case none
+        case rise
+        case fall
+    }
+
+    public static func acceleration(forTemperatureRate rate: Double?) -> Acceleration {
+        guard let rate, rate.isFinite else { return .none }
+        if rate >= accelerationThreshold { return .rise }
+        if rate <= -accelerationThreshold { return .fall }
+        return .none
+    }
 
     public static func next(
         current: Int,
@@ -493,12 +509,15 @@ public enum FanSmoothing {
         riseLimit: Int = defaultRiseLimit,
         fallLimit: Int = defaultFallLimit,
         deadband: Int = defaultDeadband,
-        advance: Bool = true
+        advance: Bool = true,
+        acceleration: Acceleration = .none
     ) -> Int {
         guard advance else { return current }
         let difference = target - current
-        guard abs(difference) > deadband else { return current }
-        return current + min(riseLimit, max(-fallLimit, difference))
+        guard abs(difference) > deadband else { return target }
+        let effectiveRiseLimit = acceleration == .rise ? acceleratedRiseLimit : riseLimit
+        let effectiveFallLimit = acceleration == .fall ? acceleratedFallLimit : fallLimit
+        return current + min(effectiveRiseLimit, max(-effectiveFallLimit, difference))
     }
 }
 public struct FanOutputResolution: Equatable, Sendable {
@@ -519,14 +538,17 @@ public enum FanOutputResolver {
         currentPercentage: Int,
         isEnabled: Bool,
         budget: FanBudget,
-        advanceSmoothing: Bool
+        advanceSmoothing: Bool,
+        temperatureRate: Double? = nil
     ) -> FanOutputResolution {
         let target = budget.applying(to: curvePercentage)
+        let acceleration = FanSmoothing.acceleration(forTemperatureRate: temperatureRate)
         let smoothed = isEnabled
             ? FanSmoothing.next(
                 current: currentPercentage,
                 target: target,
-                advance: advanceSmoothing
+                advance: advanceSmoothing,
+                acceleration: acceleration
             )
             : target
         // A lower scene ceiling is a hard limit, so drop to it at once.

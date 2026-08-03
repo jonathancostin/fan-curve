@@ -98,6 +98,11 @@ precondition(
     FanBudget(enabled: true, ceilingPercentage: -1, coolingPriority: 101)
         == FanBudget(enabled: true, ceilingPercentage: 0, coolingPriority: 100)
 )
+precondition(FanSmoothing.acceleration(forTemperatureRate: nil) == .none)
+precondition(FanSmoothing.acceleration(forTemperatureRate: 1.49) == .none)
+precondition(FanSmoothing.acceleration(forTemperatureRate: 1.5) == .rise)
+precondition(FanSmoothing.acceleration(forTemperatureRate: -1.5) == .fall)
+precondition(FanSmoothing.acceleration(forTemperatureRate: .nan) == .none)
 let partialBudget = try! JSONDecoder().decode(
     FanBudget.self,
     from: Data(#"{"enabled":true}"#.utf8)
@@ -120,6 +125,24 @@ let smoothedRise = FanOutputResolver.resolve(
     advanceSmoothing: true
 )
 precondition(smoothedRise == FanOutputResolution(percentage: 22, targetPercentage: 80, budgetCapped: false))
+let acceleratedRise = FanOutputResolver.resolve(
+    curvePercentage: 80,
+    currentPercentage: 20,
+    isEnabled: true,
+    budget: .disabled,
+    advanceSmoothing: true,
+    temperatureRate: 2
+)
+precondition(acceleratedRise == FanOutputResolution(percentage: 28, targetPercentage: 80, budgetCapped: false))
+let acceleratedFall = FanOutputResolver.resolve(
+    curvePercentage: 20,
+    currentPercentage: 80,
+    isEnabled: true,
+    budget: .disabled,
+    advanceSmoothing: true,
+    temperatureRate: -2
+)
+precondition(acceleratedFall == FanOutputResolution(percentage: 76, targetPercentage: 20, budgetCapped: false))
 let hardCappedDrop = FanOutputResolver.resolve(
     curvePercentage: 80,
     currentPercentage: 80,
@@ -417,8 +440,15 @@ precondition(!HelperInstallation.launchDaemonMatches(
 precondition(FanSmoothing.next(current: 20, target: 80) == 22)
 precondition(FanSmoothing.next(current: 80, target: 20) == 79)
 precondition(FanSmoothing.next(current: 50, target: 53) == 52)
-precondition(FanSmoothing.next(current: 50, target: 52) == 50)
+precondition(FanSmoothing.next(current: 50, target: 52) == 52)
+precondition(FanSmoothing.next(current: 20, target: 80, acceleration: .rise) == 28)
+precondition(FanSmoothing.next(current: 80, target: 20, acceleration: .fall) == 76)
 precondition(FanSmoothing.next(current: 20, target: 80, advance: false) == 20)
+var settledRise = 40
+for _ in 0..<40 {
+    settledRise = FanSmoothing.next(current: settledRise, target: 100)
+}
+precondition(settledRise == 100)
 
 precondition(ControlDisplayState(hasTemperature: false, fanCount: 2, isEnabled: false, isActive: false) == .problem)
 precondition(ControlDisplayState(hasTemperature: true, fanCount: 0, isEnabled: false, isActive: false) == .problem)
