@@ -513,6 +513,7 @@ final class FanController: NSObject, UNUserNotificationCenterDelegate {
             let average = MacHardware.averageCPUTemperature(availableKeys: availableKeys) {
                 SMC.shared.getValue($0)
             }
+            let temperatureReadAt = ProcessInfo.processInfo.systemUptime
             if average != nil { self.availableSMCKeys = availableKeys }
             let active = Self.controlIsActive(
                 expectedPercentage: expectedPercentage,
@@ -559,7 +560,7 @@ final class FanController: NSObject, UNUserNotificationCenterDelegate {
                 if let average,
                    let previousTemperature = self.averageTemperature,
                    let previousReadingAt = self.lastTemperatureReadingAt {
-                    let elapsed = recordedAt - previousReadingAt
+                    let elapsed = temperatureReadAt - previousReadingAt
                     temperatureRate = elapsed > 0
                         ? (average - previousTemperature) / elapsed
                         : nil
@@ -567,7 +568,7 @@ final class FanController: NSObject, UNUserNotificationCenterDelegate {
                     temperatureRate = nil
                 }
                 self.averageTemperature = average
-                self.lastTemperatureReadingAt = average == nil ? nil : recordedAt
+                self.lastTemperatureReadingAt = average == nil ? nil : temperatureReadAt
                 self.detectedFanCount = fans.count
                 self.supportLevel = supportLevel
                 self.fanTelemetry = fanTelemetry

@@ -514,7 +514,10 @@ public enum FanSmoothing {
     ) -> Int {
         guard advance else { return current }
         let difference = target - current
-        guard abs(difference) > deadband else { return target }
+        guard difference != 0 else { return current }
+        if abs(difference) <= deadband {
+            return current + (difference > 0 ? 1 : -1)
+        }
         let effectiveRiseLimit = acceleration == .rise ? acceleratedRiseLimit : riseLimit
         let effectiveFallLimit = acceleration == .fall ? acceleratedFallLimit : fallLimit
         return current + min(effectiveRiseLimit, max(-effectiveFallLimit, difference))

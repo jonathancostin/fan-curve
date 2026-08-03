@@ -440,7 +440,7 @@ precondition(!HelperInstallation.launchDaemonMatches(
 precondition(FanSmoothing.next(current: 20, target: 80) == 22)
 precondition(FanSmoothing.next(current: 80, target: 20) == 79)
 precondition(FanSmoothing.next(current: 50, target: 53) == 52)
-precondition(FanSmoothing.next(current: 50, target: 52) == 52)
+precondition(FanSmoothing.next(current: 50, target: 52) == 51)
 precondition(FanSmoothing.next(current: 20, target: 80, acceleration: .rise) == 28)
 precondition(FanSmoothing.next(current: 80, target: 20, acceleration: .fall) == 76)
 precondition(FanSmoothing.next(current: 20, target: 80, advance: false) == 20)
