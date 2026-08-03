@@ -119,15 +119,23 @@ let smoothedRise = FanOutputResolver.resolve(
     budget: .disabled,
     advanceSmoothing: true
 )
-precondition(smoothedRise == FanOutputResolution(percentage: 25, targetPercentage: 80, budgetCapped: false))
+precondition(smoothedRise == FanOutputResolution(percentage: 22, targetPercentage: 80, budgetCapped: false))
 let hardCappedDrop = FanOutputResolver.resolve(
     curvePercentage: 80,
     currentPercentage: 80,
     isEnabled: true,
     budget: cappedBudget,
-    advanceSmoothing: false
+    advanceSmoothing: true
 )
 precondition(hardCappedDrop == FanOutputResolution(percentage: 40, targetPercentage: 40, budgetCapped: true))
+let smoothedFall = FanOutputResolver.resolve(
+    curvePercentage: 20,
+    currentPercentage: 80,
+    isEnabled: true,
+    budget: .disabled,
+    advanceSmoothing: true
+)
+precondition(smoothedFall == FanOutputResolution(percentage: 79, targetPercentage: 20, budgetCapped: false))
 
 precondition(partialBudget == FanBudget(enabled: true))
 
@@ -406,9 +414,9 @@ precondition(!HelperInstallation.launchDaemonMatches(
     ownerUID: 501
 ))
 
-precondition(FanSmoothing.next(current: 20, target: 80) == 25)
-precondition(FanSmoothing.next(current: 80, target: 20) == 78)
-precondition(FanSmoothing.next(current: 50, target: 53) == 53)
+precondition(FanSmoothing.next(current: 20, target: 80) == 22)
+precondition(FanSmoothing.next(current: 80, target: 20) == 79)
+precondition(FanSmoothing.next(current: 50, target: 53) == 52)
 precondition(FanSmoothing.next(current: 50, target: 52) == 50)
 precondition(FanSmoothing.next(current: 20, target: 80, advance: false) == 20)
 

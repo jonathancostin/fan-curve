@@ -483,12 +483,16 @@ public struct FanRange: Equatable, Sendable {
 }
 
 public enum FanSmoothing {
+    public static let defaultRiseLimit = 2
+    public static let defaultFallLimit = 1
+    public static let defaultDeadband = 2
+
     public static func next(
         current: Int,
         target: Int,
-        riseLimit: Int = 5,
-        fallLimit: Int = 2,
-        deadband: Int = 2,
+        riseLimit: Int = defaultRiseLimit,
+        fallLimit: Int = defaultFallLimit,
+        deadband: Int = defaultDeadband,
         advance: Bool = true
     ) -> Int {
         guard advance else { return current }
@@ -525,7 +529,9 @@ public enum FanOutputResolver {
                 advance: advanceSmoothing
             )
             : target
-        let percentage = target < currentPercentage ? target : smoothed
+        // A lower scene ceiling is a hard limit, so drop to it at once.
+        let hardCapDrop = budget.caps(curvePercentage) && target < currentPercentage
+        let percentage = hardCapDrop ? target : smoothed
         return FanOutputResolution(
             percentage: percentage,
             targetPercentage: target,
