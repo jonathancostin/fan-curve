@@ -5,7 +5,9 @@ Fan Curve is a small macOS menu-bar app that adjusts fan speed from CPU temperat
 ## What you can do
 
 - Set a fan curve by dragging points or entering exact values.
-- Keep three saved curves and switch between them.
+- Use named Balanced, Quiet, and Cooling scenes, each with its own curve.
+- Set an optional per-scene fan ceiling and cooling priority.
+- Opt in to power-aware scene switching: Quiet on battery, Balanced on AC or UPS power, with unknown power falling back to Balanced.
 - See CPU temperature, current fan speed, target speed, and fan mode.
 - Check recent temperature and fan output on the same chart.
 - Copy a curve as JSON and paste it back later.
@@ -27,7 +29,7 @@ The app returns control to macOS when you:
 - lose contact with the helper; or
 - reach serious system heat pressure.
 
-Fan targets always stay within the minimum and maximum speeds reported by the Mac. If temperature, fan, or helper data looks wrong, Fan Curve does not start control.
+Fan targets always stay within the minimum and maximum speeds reported by the Mac. Scene budgets only cap or raise the requested percentage; they never bypass the helper's heartbeat, fan bounds, or thermal-pressure recovery. If temperature, fan, or helper data looks wrong, Fan Curve does not start control.
 
 ## Install with Homebrew
 
@@ -64,6 +66,22 @@ On a Mac that has known sensor keys but has not passed device tests, the app ask
 - **Problem** — Fan Curve cannot confirm safe control or is still waiting for automatic control to return.
 
 If you see **Problem**, turn the curve off. Use **Copy Support Report** if the problem remains.
+
+## Control recorder
+
+Fan Curve keeps a small local record of control changes and failures at:
+
+```text
+~/Library/Logs/Fan Curve/control-events.jsonl
+```
+
+Each loss records the state heartbeat, helper reply, fan modes and targets, CPU temperature, poll time, and system heat state. The file stops at 256 KB and keeps one older copy. It never leaves the Mac.
+
+Read the latest events with:
+
+```sh
+tail -n 20 "$HOME/Library/Logs/Fan Curve/control-events.jsonl" | jq .
+```
 
 ## Mac support
 

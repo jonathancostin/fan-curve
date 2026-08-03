@@ -2,6 +2,7 @@ import AppKit
 import Darwin
 import FanCurveCore
 import Foundation
+import IOKit.ps
 import StatsSMC
 import UserNotifications
 
@@ -12,7 +13,12 @@ final class FanController: NSObject, UNUserNotificationCenterDelegate {
     private static let selectedProfileKey = "selectedCurveProfile"
     private static let historyKey = "temperatureHistory"
     private static let confirmedUnverifiedModelKey = "confirmedUnverifiedModel"
+    private static let sceneBudgetsKey = "sceneBudgets"
+    private static let automaticScenesKey = "automaticScenes"
     static let resumeAfterLaunchKey = "resumeAfterLaunch"
+
+    static let sceneNames = FanSceneCatalog.names
+
 
     private(set) var points: [CurvePoint]
     private(set) var selectedProfile: Int
@@ -27,10 +33,15 @@ final class FanController: NSObject, UNUserNotificationCenterDelegate {
     private(set) var isBusy = false
     private(set) var helperInstalled = HelperInstallation.isSecure()
     private(set) var resumeAfterLaunch: Bool
+    private(set) var sceneBudgets: [FanBudget]
+    private(set) var automaticScenes: Bool
+    private(set) var powerSource = ScenePowerSource.unknown
+    private(set) var budgetCapped = false
     private(set) var status = "Apple automatic control"
     var onUpdate: (() -> Void)?
 
     private let worker = DispatchQueue(label: "com.jonathan.FanCurve.smc")
+    private let controlRecorder = ControlEventRecorder()
     private let deviceModel = MacHardware.modelIdentifier()
     private let statePath = "/tmp/fancurve-\(getuid()).json"
     private let acknowledgementPath = "/var/run/fancurve-\(getuid()).ack"
@@ -38,13 +49,15 @@ final class FanController: NSObject, UNUserNotificationCenterDelegate {
     private var workspaceObservers: [NSObjectProtocol] = []
     private var wakeRecovery = WakeRecovery()
     private var controlConfirmation = ControlConfirmationDeadline()
+    private var controlLoopSchedule = ControlLoopSchedule()
     private var launchRecovery: LaunchRecovery
     private var activeControlTransition = ActiveControlTransition()
     private var availableSMCKeys: Set<String>?
     private var fanRanges: [FanRange]?
-
     private override init() {
         resumeAfterLaunch = UserDefaults.standard.bool(forKey: Self.resumeAfterLaunchKey)
+        automaticScenes = UserDefaults.standard.bool(forKey: Self.automaticScenesKey)
+        sceneBudgets = Self.loadSceneBudgets()
         launchRecovery = LaunchRecovery(requested: resumeAfterLaunch)
         selectedProfile = min(2, max(0, UserDefaults.standard.integer(forKey: Self.selectedProfileKey)))
         if let data = UserDefaults.standard.data(forKey: Self.pointsKey(for: selectedProfile)),
@@ -56,7 +69,13 @@ final class FanController: NSObject, UNUserNotificationCenterDelegate {
         temperatureHistory = UserDefaults.standard.data(forKey: Self.historyKey)
             .flatMap(TemperatureHistory.decode) ?? []
         super.init()
+
         UNUserNotificationCenter.current().delegate = self
+        controlRecorder.record(ControlEvent(
+            kind: .launched,
+            message: Bundle.main.object(forInfoDictionaryKey: "FanCurveSourceRevision") as? String,
+            thermalState: Self.thermalStateName(ProcessInfo.processInfo.thermalState)
+        ))
 
         let timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in self?.poll() }
         self.timer = timer
@@ -74,6 +93,37 @@ final class FanController: NSObject, UNUserNotificationCenterDelegate {
         ) { [weak self] _ in self?.didWake() })
         poll()
     }
+    private static func loadSceneBudgets() -> [FanBudget] {
+        guard let data = UserDefaults.standard.data(forKey: sceneBudgetsKey),
+              data.count <= 4_096,
+              let saved = try? JSONDecoder().decode([FanBudget].self, from: data) else {
+            return Array(repeating: .disabled, count: FanSceneCatalog.names.count)
+        }
+        return (0..<FanSceneCatalog.names.count).map { index in
+            saved.indices.contains(index) ? saved[index] : .disabled
+        }
+    }
+
+    private func saveSceneBudgets() {
+        guard let data = try? JSONEncoder().encode(sceneBudgets) else { return }
+        UserDefaults.standard.set(data, forKey: Self.sceneBudgetsKey)
+    }
+
+    var sceneName: String {
+        FanSceneCatalog.names[selectedProfile]
+    }
+
+    var activeBudget: FanBudget {
+        sceneBudgets[selectedProfile]
+    }
+
+    var budgetDescription: String {
+        guard activeBudget.enabled else { return "Budget off" }
+        let cap = "\(activeBudget.ceilingPercentage)% ceiling"
+        let priority = "\(activeBudget.coolingPriority)% cooling priority"
+        return budgetCapped ? "\(cap) · \(priority) · capped" : "\(cap) · \(priority)"
+    }
+
 
     func updatePoints(_ newPoints: [CurvePoint]) {
         let sorted = newPoints.sorted { $0.temperature < $1.temperature }
@@ -82,18 +132,67 @@ final class FanController: NSObject, UNUserNotificationCenterDelegate {
         if let data = try? JSONEncoder().encode(points) {
             UserDefaults.standard.set(data, forKey: Self.pointsKey(for: selectedProfile))
         }
-        refreshOutput()
+        refreshOutput(writeStateIfEnabled: true)
         onUpdate?()
     }
 
     func selectProfile(_ profile: Int) {
-        guard (0..<3).contains(profile), profile != selectedProfile else { return }
+        guard !automaticScenes else {
+            status = "Disable automatic scenes to choose manually"
+            onUpdate?()
+            return
+        }
+        guard (0..<FanSceneCatalog.names.count).contains(profile), profile != selectedProfile else { return }
         selectedProfile = profile
         UserDefaults.standard.set(profile, forKey: Self.selectedProfileKey)
         points = UserDefaults.standard.data(forKey: Self.pointsKey(for: profile))
             .flatMap(FanCurve.decodePoints) ?? FanCurve.defaultPoints
-        refreshOutput()
-        status = "Profile \(profile + 1) selected"
+        refreshOutput(writeStateIfEnabled: true)
+        status = "\(sceneName) scene selected"
+        onUpdate?()
+    }
+
+    func setBudgetEnabled(_ enabled: Bool) {
+        updateBudget { $0 = FanBudget(
+            enabled: enabled,
+            ceilingPercentage: $0.ceilingPercentage,
+            coolingPriority: $0.coolingPriority
+        ) }
+    }
+
+    func setBudgetCeiling(_ percentage: Int) {
+        updateBudget { $0 = FanBudget(
+            enabled: $0.enabled,
+            ceilingPercentage: percentage,
+            coolingPriority: $0.coolingPriority
+        ) }
+    }
+
+    func setCoolingPriority(_ percentage: Int) {
+        updateBudget { $0 = FanBudget(
+            enabled: $0.enabled,
+            ceilingPercentage: $0.ceilingPercentage,
+            coolingPriority: percentage
+        ) }
+    }
+
+    func setAutomaticScenes(_ enabled: Bool) {
+        automaticScenes = enabled
+        powerSource = Self.currentPowerSource()
+        UserDefaults.standard.set(enabled, forKey: Self.automaticScenesKey)
+        applyAutomaticSceneIfNeeded()
+        status = enabled
+            ? "Battery uses Quiet · AC/UPS/unknown uses Balanced"
+            : "Automatic scenes disabled"
+        onUpdate?()
+    }
+
+    private func updateBudget(_ update: (inout FanBudget) -> Void) {
+        guard sceneBudgets.indices.contains(selectedProfile) else { return }
+        update(&sceneBudgets[selectedProfile])
+        saveSceneBudgets()
+        refreshOutput(writeStateIfEnabled: true)
+        status = budgetDescription
         onUpdate?()
     }
 
@@ -177,15 +276,38 @@ final class FanController: NSObject, UNUserNotificationCenterDelegate {
                 onUpdate?()
                 return
             }
-            outputPercentage = Int(FanCurve(points: points).percentage(at: averageTemperature).rounded())
+            let curveTarget = Int(FanCurve(points: points).percentage(at: averageTemperature).rounded())
+            let resolution = FanOutputResolver.resolve(
+                curvePercentage: curveTarget,
+                currentPercentage: outputPercentage,
+                isEnabled: false,
+                budget: activeBudget,
+                advanceSmoothing: false
+            )
+            outputPercentage = resolution.percentage
+            budgetCapped = resolution.budgetCapped
             writeState(enabled: true)
             guard isEnabled else { onUpdate?(); return }
             controlConfirmation.start(at: ProcessInfo.processInfo.systemUptime)
             status = "Waiting for background helper…"
+            controlRecorder.record(ControlEvent(
+                kind: .enabled,
+                message: "Control requested",
+                expectedPercentage: outputPercentage,
+                temperature: averageTemperature,
+                thermalState: Self.thermalStateName(ProcessInfo.processInfo.thermalState)
+            ))
         } else {
             controlIsActive = false
             writeState(enabled: false)
             status = reason ?? "Apple automatic control"
+            controlRecorder.record(ControlEvent(
+                kind: .disabled,
+                message: status,
+                expectedPercentage: outputPercentage,
+                temperature: averageTemperature,
+                thermalState: Self.thermalStateName(ProcessInfo.processInfo.thermalState)
+            ))
         }
         onUpdate?()
     }
@@ -275,6 +397,13 @@ final class FanController: NSObject, UNUserNotificationCenterDelegate {
     }
 
     func shutdown() {
+        controlRecorder.record(ControlEvent(
+            kind: .stopped,
+            message: "App shutting down",
+            expectedPercentage: outputPercentage,
+            temperature: averageTemperature,
+            thermalState: Self.thermalStateName(ProcessInfo.processInfo.thermalState)
+        ))
         timer?.invalidate()
         workspaceObservers.forEach(NSWorkspace.shared.notificationCenter.removeObserver)
         wakeRecovery.cancelResume()
@@ -339,10 +468,21 @@ final class FanController: NSObject, UNUserNotificationCenterDelegate {
     }
 
     private func poll() {
-        guard !isBusy else { return }
-        guard let isWakePoll = wakeRecovery.beginPoll() else { return }
+        let work = controlLoopSchedule.tick(isEnabled: isEnabled)
+        if work.refreshHeartbeat { writeState(enabled: true) }
+        guard work.startPoll else { return }
+        guard !isBusy else {
+            controlLoopSchedule.finishPoll()
+            return
+        }
+        guard let isWakePoll = wakeRecovery.beginPoll() else {
+            controlLoopSchedule.finishPoll()
+            return
+        }
         let expectedPercentage = outputPercentage
+        let pollStartedAt = ProcessInfo.processInfo.systemUptime
         let acknowledgementPath = acknowledgementPath
+        let statePath = statePath
         let bundledHelperPath = launchRecovery.isPending
             ? bundledResource("FanCurveHelper")?.path
             : nil
@@ -383,8 +523,27 @@ final class FanController: NSObject, UNUserNotificationCenterDelegate {
             let helperIsCurrent = bundledHelperPath.map {
                 HelperInstallation.isCurrent(bundledHelperPath: $0)
             } ?? false
+            let powerSource = Self.currentPowerSource()
+            let recordedAt = Date().timeIntervalSince1970
+            let stateSnapshot = Self.stateSnapshot(path: statePath, at: recordedAt)
+            let acknowledgementSnapshot = Self.acknowledgementSnapshot(
+                path: acknowledgementPath,
+                at: recordedAt
+            )
+            let fanSnapshots = fans.map { fan in
+                let telemetry = fanTelemetry.first { $0.id == fan.id }
+                return ControlFanSnapshot(
+                    id: fan.id,
+                    mode: telemetry?.mode.map(Self.fanModeName) ?? "unknown",
+                    actualRPM: telemetry?.actualRPM,
+                    targetRPM: telemetry?.targetRPM,
+                    expectedRPM: Double(fan.rpm(at: expectedPercentage))
+                )
+            }
+            let thermalState = Self.thermalStateName(ProcessInfo.processInfo.thermalState)
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
+                self.controlLoopSchedule.finishPoll()
                 let shouldResume = self.wakeRecovery.finishPoll(
                     isWakePoll: isWakePoll,
                     hasTemperature: average != nil
@@ -399,13 +558,31 @@ final class FanController: NSObject, UNUserNotificationCenterDelegate {
                 self.detectedFanCount = fans.count
                 self.supportLevel = supportLevel
                 self.fanTelemetry = fanTelemetry
-                self.controlIsActive = active
                 self.helperInstalled = helperInstalled
+                self.powerSource = powerSource
+                let sceneChanged = self.applyAutomaticSceneIfNeeded()
+                let controlIsCurrent = !sceneChanged && active
+                let wasControlActive = self.controlIsActive
+                self.controlIsActive = controlIsCurrent
+                if self.isEnabled, !sceneChanged, wasControlActive != controlIsCurrent {
+                    self.controlRecorder.record(ControlEvent(
+                        kind: controlIsCurrent ? .controlRestored : .controlLost,
+                        timestamp: recordedAt,
+                        message: controlIsCurrent ? "Helper confirmation restored" : "Helper confirmation missing",
+                        expectedPercentage: expectedPercentage,
+                        state: stateSnapshot,
+                        acknowledgement: acknowledgementSnapshot,
+                        fans: fanSnapshots,
+                        temperature: average,
+                        pollDuration: ProcessInfo.processInfo.systemUptime - pollStartedAt,
+                        thermalState: thermalState
+                    ))
+                }
                 if launchResumeWasPending && !shouldResumeAfterLaunch {
                     self.status = "Launch resume skipped; check temperature, fans, and helper"
                 }
                 if shouldResume || shouldResumeAfterLaunch { self.setEnabled(true) }
-                if active {
+                if controlIsCurrent {
                     _ = self.activeControlTransition.shouldNotify(
                         isEnabled: self.isEnabled,
                         isActive: true
@@ -419,7 +596,7 @@ final class FanController: NSObject, UNUserNotificationCenterDelegate {
                 } else {
                     if self.isEnabled {
                         switch self.controlConfirmation.failure(
-                            isConfirmed: active,
+                            isConfirmed: controlIsCurrent,
                             at: ProcessInfo.processInfo.systemUptime
                         ) {
                         case .neverConfirmed:
@@ -430,23 +607,30 @@ final class FanController: NSObject, UNUserNotificationCenterDelegate {
                             }
                             self.setEnabled(false, reason: "Background helper stopped confirming control")
                         case nil:
-                            self.status = active ? "Curve active" : "Waiting for background helper…"
+                            self.status = controlIsCurrent ? "Curve active" : "Waiting for background helper…"
                         }
                     }
                     self.refreshOutput(advanceSmoothing: true)
                     if let average {
                         self.recordTemperature(
                             average,
-                            fanPercentage: self.isEnabled && active ? self.outputPercentage : nil
+                            fanPercentage: self.isEnabled && controlIsCurrent ? self.outputPercentage : nil
                         )
                     }
                     self.onUpdate?()
                 }
+                }
             }
         }
-    }
 
     private func prepareForSleep() {
+        controlRecorder.record(ControlEvent(
+            kind: .sleeping,
+            message: isEnabled ? "Pausing active control for sleep" : "Sleeping while control is off",
+            expectedPercentage: outputPercentage,
+            temperature: averageTemperature,
+            thermalState: Self.thermalStateName(ProcessInfo.processInfo.thermalState)
+        ))
         launchRecovery.cancelResume()
         wakeRecovery.prepareForSleep(wasEnabled: isEnabled)
         guard isEnabled else { return }
@@ -460,6 +644,12 @@ final class FanController: NSObject, UNUserNotificationCenterDelegate {
 
     private func didWake() {
         guard wakeRecovery.didWake() else { return }
+        controlRecorder.record(ControlEvent(
+            kind: .woke,
+            message: "Waiting for the first temperature after wake",
+            expectedPercentage: outputPercentage,
+            thermalState: Self.thermalStateName(ProcessInfo.processInfo.thermalState)
+        ))
         status = "Waiting for temperature after wake…"
         poll()
         onUpdate?()
@@ -507,21 +697,122 @@ final class FanController: NSObject, UNUserNotificationCenterDelegate {
                   forbiddenPermissions: 0o022,
                   maxSize: 4_096
               ),
-              let acknowledgement = try? JSONDecoder().decode(ControlAcknowledgement.self, from: data),
-              ControlPolicy.acknowledgementMatches(
-                  acknowledgement,
-                  expectedPercentage: expectedPercentage,
-                  ownerUID: getuid(),
-                  now: Date().timeIntervalSince1970
-              ) else { return false }
-
-        guard !fans.isEmpty else { return false }
-        return fans.allSatisfy { fan in
+              let acknowledgement = try? JSONDecoder().decode(ControlAcknowledgement.self, from: data) else {
+            return false
+        }
+        let fanTargetsMatchExpected = !fans.isEmpty && fans.allSatisfy { fan in
             guard let telemetry = fanTelemetry.first(where: { $0.id == fan.id }),
                   let target = telemetry.targetRPM else { return false }
             return telemetry.mode == .forced
                 && abs(target - Double(fan.rpm(at: expectedPercentage))) <= 5
         }
+        return ControlPolicy.confirmationMatches(
+            acknowledgement,
+            ownerUID: getuid(),
+            now: Date().timeIntervalSince1970,
+            fanTargetsMatchExpected: fanTargetsMatchExpected
+        )
+    }
+
+    private static func stateSnapshot(path: String, at time: TimeInterval) -> ControlStateSnapshot {
+        let present = FileManager.default.fileExists(atPath: path)
+        guard let data = SecureRegularFile.read(
+                  path,
+                  ownerUID: getuid(),
+                  forbiddenPermissions: 0o077,
+                  maxSize: 4_096
+              ),
+              let state = try? JSONDecoder().decode(ControlState.self, from: data),
+              state.ownerUID == getuid() else {
+            return ControlStateSnapshot(present: present, valid: false)
+        }
+        return ControlStateSnapshot(
+            present: true,
+            valid: true,
+            enabled: state.enabled,
+            percentage: state.percentage,
+            heartbeatAge: time - state.heartbeat
+        )
+    }
+
+    private static func acknowledgementSnapshot(
+        path: String,
+        at time: TimeInterval
+    ) -> ControlAcknowledgementSnapshot {
+        let present = FileManager.default.fileExists(atPath: path)
+        guard let data = SecureRegularFile.read(
+                  path,
+                  ownerUID: 0,
+                  forbiddenPermissions: 0o022,
+                  maxSize: 4_096
+              ),
+              let acknowledgement = try? JSONDecoder().decode(ControlAcknowledgement.self, from: data),
+              acknowledgement.ownerUID == getuid() else {
+            return ControlAcknowledgementSnapshot(present: present, valid: false)
+        }
+        return ControlAcknowledgementSnapshot(
+            present: true,
+            valid: true,
+            percentage: acknowledgement.percentage,
+            heartbeatAge: time - acknowledgement.heartbeat
+        )
+    }
+
+    private static func fanModeName(_ mode: HardwareFanMode) -> String {
+        switch mode {
+        case .automatic: "automatic"
+        case .forced: "forced"
+        case .system: "system"
+        }
+    }
+
+    private static func thermalStateName(_ state: ProcessInfo.ThermalState) -> String {
+        switch state {
+        case .nominal: "nominal"
+        case .fair: "fair"
+        case .serious: "serious"
+        case .critical: "critical"
+        @unknown default: "unknown"
+        }
+    }
+
+
+    private static func currentPowerSource() -> ScenePowerSource {
+        let info = IOPSCopyPowerSourcesInfo().takeRetainedValue()
+        guard let raw = IOPSGetProvidingPowerSourceType(info)?.takeUnretainedValue() as? String else {
+            return .unknown
+        }
+        switch raw {
+        case kIOPMACPowerKey:
+            return .external
+        case kIOPMBatteryPowerKey:
+            return .battery
+        case kIOPMUPSPowerKey:
+            return .ups
+        default:
+            return .unknown
+        }
+    }
+
+    @discardableResult
+    private func applyAutomaticSceneIfNeeded() -> Bool {
+        guard let profile = SceneSelection.profile(
+            for: powerSource,
+            automatic: automaticScenes
+        ), profile != selectedProfile else { return false }
+        selectedProfile = profile
+        UserDefaults.standard.set(profile, forKey: Self.selectedProfileKey)
+        points = UserDefaults.standard.data(forKey: Self.pointsKey(for: profile))
+            .flatMap(FanCurve.decodePoints) ?? FanCurve.defaultPoints
+        refreshOutput(writeStateIfEnabled: true)
+        let source = switch powerSource {
+        case .battery: "Battery"
+        case .external: "AC power"
+        case .ups: "UPS power"
+        case .unknown: "unknown power (Balanced fallback)"
+        }
+        status = "Automatic \(sceneName) scene (\(source))"
+        return true
     }
 
     private static func fanMode(_ id: Int) -> HardwareFanMode? {
@@ -532,16 +823,28 @@ final class FanController: NSObject, UNUserNotificationCenterDelegate {
         #endif
     }
 
-    private func refreshOutput(advanceSmoothing: Bool = false) {
+    private func refreshOutput(
+        advanceSmoothing: Bool = false,
+        writeStateIfEnabled: Bool = false
+    ) {
         guard let averageTemperature else {
             outputPercentage = 0
+            budgetCapped = false
             return
         }
-        let target = Int(FanCurve(points: points).percentage(at: averageTemperature).rounded())
-        outputPercentage = isEnabled
-            ? FanSmoothing.next(current: outputPercentage, target: target, advance: advanceSmoothing)
-            : target
-        if isEnabled, advanceSmoothing { writeState(enabled: true) }
+        let curveTarget = Int(FanCurve(points: points).percentage(at: averageTemperature).rounded())
+        let resolution = FanOutputResolver.resolve(
+            curvePercentage: curveTarget,
+            currentPercentage: outputPercentage,
+            isEnabled: isEnabled,
+            budget: activeBudget,
+            advanceSmoothing: advanceSmoothing
+        )
+        outputPercentage = resolution.percentage
+        budgetCapped = resolution.budgetCapped
+        if isEnabled, (advanceSmoothing || writeStateIfEnabled) {
+            writeState(enabled: true)
+        }
     }
 
     private func writeState(enabled: Bool) {
@@ -560,6 +863,13 @@ final class FanController: NSObject, UNUserNotificationCenterDelegate {
         } catch {
             isEnabled = false
             status = "Could not update controller state"
+            controlRecorder.record(ControlEvent(
+                kind: .stateWriteFailed,
+                message: error.localizedDescription,
+                expectedPercentage: outputPercentage,
+                temperature: averageTemperature,
+                thermalState: Self.thermalStateName(ProcessInfo.processInfo.thermalState)
+            ))
         }
     }
 

@@ -171,7 +171,7 @@ func checkProfiles() {
     controller.updatePoints(Array(FanCurve.defaultPoints.dropLast()))
     let firstProfile = controller.points
     let profiles = require(
-        controls(NSSegmentedControl.self, labelled: "Saved profile", in: viewController.view).first,
+        controls(NSSegmentedControl.self, labelled: "Scene", in: viewController.view).first,
         "saved profiles"
     )
     profiles.selectedSegment = 1
@@ -183,6 +183,78 @@ func checkProfiles() {
     profiles.sendAction(profiles.action, to: profiles.target)
     precondition(controller.points == firstProfile, "each profile must keep its own curve")
 }
+@MainActor
+func checkScenesAndBudgets() {
+    let controller = TestController()
+    let viewController = MainViewController(controller: controller, systemActions: TestSystemActions())
+    viewController.loadView()
+    controller.onUpdate = { viewController.refresh() }
+
+    precondition(
+        controller.selectedProfile == FanSceneCatalog.defaultProfile
+            && controller.sceneName == "Balanced"
+            && !controller.automaticScenes
+            && controller.sceneBudgets.allSatisfy { $0 == .disabled },
+        "new scene settings must preserve the disabled-budget default"
+    )
+    let profiles = require(
+        controls(NSSegmentedControl.self, labelled: "Scene", in: viewController.view).first,
+        "saved scenes"
+    )
+    precondition(
+        profiles.label(forSegment: 0) == "Balanced"
+            && profiles.label(forSegment: 1) == "Quiet"
+            && profiles.label(forSegment: 2) == "Cooling",
+        "scenes must have meaningful names"
+    )
+    let budgetToggle = require(toggle("Use scene budget", in: viewController.view), "scene budget toggle")
+    budgetToggle.state = .off
+    budgetToggle.performClick(nil)
+    let ceiling = require(
+        controls(NSSlider.self, labelled: "Fan budget ceiling percentage", in: viewController.view).first,
+        "fan budget ceiling"
+    )
+    precondition(ceiling.integerValue == 100, "budget ceiling must default to no cap")
+    precondition(controller.sceneBudgets[0].enabled, "budget toggle must enable the active scene budget")
+    controller.setBudgetCeiling(55)
+    controller.setCoolingPriority(80)
+    precondition(
+        controller.sceneBudgets[0] == FanBudget(enabled: true, ceilingPercentage: 55, coolingPriority: 80),
+        "budget controls must persist their active scene settings"
+    )
+    controller.outputPercentage = 80
+    controller.setBudgetCeiling(40)
+    precondition(controller.budgetCapped, "a lower ceiling must expose capped status")
+    viewController.refresh()
+    let budgetStatus = require(
+        controls(NSTextField.self, labelled: "Scene budget status", in: viewController.view).first,
+        "scene budget status"
+    )
+    precondition(budgetStatus.stringValue.contains("capped"), "capped status must be visible")
+
+    profiles.selectedSegment = 2
+    profiles.sendAction(profiles.action, to: profiles.target)
+    precondition(controller.sceneBudgets[2] == .disabled, "each scene must retain an independent budget")
+    profiles.selectedSegment = 0
+    profiles.sendAction(profiles.action, to: profiles.target)
+    let automatic = require(
+        toggle("Automatically choose scene on power", in: viewController.view),
+        "automatic scene toggle"
+    )
+    automatic.state = .off
+    automatic.performClick(nil)
+    viewController.refresh()
+    precondition(controller.automaticScenes, "power context must be opt-in")
+    precondition(!profiles.isEnabled, "manual scene control must be disabled in automatic mode")
+    profiles.selectedSegment = 2
+    controller.selectProfile(2)
+    precondition(
+        controller.selectedProfile == 0
+            && controller.status == "Disable automatic scenes to choose manually",
+        "automatic scene mode must not silently revert manual scene choices"
+    )
+}
+
 
 @MainActor
 func checkButtons() {
@@ -433,6 +505,7 @@ private final class TestController: FanCurveControlling {
     var points = FanCurve.defaultPoints
     var selectedProfile = 0
     var profiles = Array(repeating: FanCurve.defaultPoints, count: 3)
+    var sceneName: String { FanSceneCatalog.names[selectedProfile] }
     var averageTemperature: Double?
     var temperatureHistory: [TemperatureSample] = []
     var outputPercentage = 40
@@ -444,6 +517,14 @@ private final class TestController: FanCurveControlling {
     var isBusy = false
     var helperInstalled = false
     var resumeAfterLaunch = false
+    var sceneBudgets = Array(repeating: FanBudget.disabled, count: FanSceneCatalog.names.count)
+    var automaticScenes = false
+    var budgetCapped = false
+    var budgetDescription: String {
+        let budget = sceneBudgets[selectedProfile]
+        guard budget.enabled else { return "Budget off" }
+        return budgetCapped ? "\(budget.ceilingPercentage)% ceiling · capped" : "\(budget.ceilingPercentage)% ceiling"
+    }
     var status = "Apple automatic control"
     var onUpdate: (() -> Void)?
     var needsSupportConfirmation = false
@@ -464,10 +545,47 @@ private final class TestController: FanCurveControlling {
     }
 
     func selectProfile(_ profile: Int) {
+        guard !automaticScenes else {
+            status = "Disable automatic scenes to choose manually"
+            onUpdate?()
+            return
+        }
         selectedProfile = profile
         points = profiles[profile]
         onUpdate?()
     }
+    func setBudgetEnabled(_ enabled: Bool) {
+        let budget = sceneBudgets[selectedProfile]
+        sceneBudgets[selectedProfile] = FanBudget(
+            enabled: enabled,
+            ceilingPercentage: budget.ceilingPercentage,
+            coolingPriority: budget.coolingPriority
+        )
+    }
+
+    func setBudgetCeiling(_ percentage: Int) {
+        let budget = sceneBudgets[selectedProfile]
+        sceneBudgets[selectedProfile] = FanBudget(
+            enabled: budget.enabled,
+            ceilingPercentage: percentage,
+            coolingPriority: budget.coolingPriority
+        )
+        budgetCapped = budget.enabled && percentage < outputPercentage
+    }
+
+    func setCoolingPriority(_ percentage: Int) {
+        let budget = sceneBudgets[selectedProfile]
+        sceneBudgets[selectedProfile] = FanBudget(
+            enabled: budget.enabled,
+            ceilingPercentage: budget.ceilingPercentage,
+            coolingPriority: percentage
+        )
+    }
+
+    func setAutomaticScenes(_ enabled: Bool) {
+        automaticScenes = enabled
+    }
+
 
     func resetPoints() {
         points = FanCurve.defaultPoints
@@ -559,6 +677,7 @@ private final class TestPopover: NSPopover {
 await MainActor.run {
     checkCurveActions()
     checkProfiles()
+    checkScenesAndBudgets()
     checkButtons()
     checkToggles()
     checkHistoryControls()

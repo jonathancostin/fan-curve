@@ -71,6 +71,66 @@ let fan = FanRange(id: 0, minimumRPM: 2_000, maximumRPM: 8_000)
 precondition(fan.rpm(at: -1) == 2_000)
 precondition(fan.rpm(at: 50) == 5_000)
 precondition(fan.rpm(at: 101) == 8_000)
+precondition(FanSceneCatalog.names == ["Balanced", "Quiet", "Cooling"])
+precondition(SceneSelection.profile(for: .battery, automatic: true) == FanSceneCatalog.batteryProfile)
+precondition(SceneSelection.profile(for: .external, automatic: true) == FanSceneCatalog.externalPowerProfile)
+precondition(SceneSelection.profile(for: .ups, automatic: true) == FanSceneCatalog.externalPowerProfile)
+precondition(SceneSelection.profile(for: .unknown, automatic: true) == FanSceneCatalog.externalPowerProfile)
+precondition(SceneSelection.profile(for: .battery, automatic: false) == nil)
+precondition(SceneSelection.changesProfile(
+    currentProfile: FanSceneCatalog.externalPowerProfile,
+    for: .battery,
+    automatic: true
+))
+precondition(!SceneSelection.changesProfile(
+    currentProfile: FanSceneCatalog.externalPowerProfile,
+    for: .unknown,
+    automatic: true
+))
+
+let disabledBudget = FanBudget.disabled
+precondition(disabledBudget.applying(to: 80) == 80 && !disabledBudget.caps(80))
+let cappedBudget = FanBudget(enabled: true, ceilingPercentage: 40, coolingPriority: 0)
+precondition(cappedBudget.applying(to: 80) == 40 && cappedBudget.caps(80))
+let boostedBudget = FanBudget(enabled: true, ceilingPercentage: 100, coolingPriority: 100)
+precondition(boostedBudget.applying(to: 40) == 100)
+precondition(
+    FanBudget(enabled: true, ceilingPercentage: -1, coolingPriority: 101)
+        == FanBudget(enabled: true, ceilingPercentage: 0, coolingPriority: 100)
+)
+let partialBudget = try! JSONDecoder().decode(
+    FanBudget.self,
+    from: Data(#"{"enabled":true}"#.utf8)
+)
+let budgetedEnable = FanOutputResolver.resolve(
+    curvePercentage: 80,
+    currentPercentage: 20,
+    isEnabled: false,
+    budget: cappedBudget,
+    advanceSmoothing: false
+)
+precondition(
+    budgetedEnable == FanOutputResolution(percentage: 40, targetPercentage: 40, budgetCapped: true)
+)
+let smoothedRise = FanOutputResolver.resolve(
+    curvePercentage: 80,
+    currentPercentage: 20,
+    isEnabled: true,
+    budget: .disabled,
+    advanceSmoothing: true
+)
+precondition(smoothedRise == FanOutputResolution(percentage: 25, targetPercentage: 80, budgetCapped: false))
+let hardCappedDrop = FanOutputResolver.resolve(
+    curvePercentage: 80,
+    currentPercentage: 80,
+    isEnabled: true,
+    budget: cappedBudget,
+    advanceSmoothing: false
+)
+precondition(hardCappedDrop == FanOutputResolution(percentage: 40, targetPercentage: 40, budgetCapped: true))
+
+precondition(partialBudget == FanBudget(enabled: true))
+
 
 let temperatures = [
     "Tp01": 60.0,
@@ -246,46 +306,79 @@ precondition(SecureRegularFile.read(
 let acknowledgement = ControlAcknowledgement(heartbeat: 100, percentage: 50, ownerUID: 501)
 precondition(acknowledgement == ControlAcknowledgement(heartbeat: 100, percentage: 50, ownerUID: 501))
 precondition(acknowledgement != ControlAcknowledgement(heartbeat: 100, percentage: 51, ownerUID: 501))
-precondition(ControlPolicy.acknowledgementMatches(
-    acknowledgement,
-    expectedPercentage: 50,
-    ownerUID: 501,
-    now: 102
-))
-precondition(!ControlPolicy.acknowledgementMatches(
-    acknowledgement,
-    expectedPercentage: 49,
-    ownerUID: 501,
-    now: 102
-))
-precondition(!ControlPolicy.acknowledgementMatches(
-    acknowledgement,
-    expectedPercentage: 50,
-    ownerUID: 501,
-    now: 103
-))
-precondition(!ControlPolicy.acknowledgementMatches(
-    acknowledgement,
-    expectedPercentage: 50,
-    ownerUID: 502,
-    now: 102
-))
-precondition(!ControlPolicy.acknowledgementMatches(
-    acknowledgement,
-    expectedPercentage: 50,
+let trailingAcknowledgement = ControlAcknowledgement(heartbeat: 100, percentage: 64, ownerUID: 501)
+precondition(ControlPolicy.confirmationMatches(
+    trailingAcknowledgement,
     ownerUID: 501,
     now: 102,
+    fanTargetsMatchExpected: true
+))
+precondition(!ControlPolicy.confirmationMatches(
+    acknowledgement,
+    ownerUID: 501,
+    now: 102,
+    fanTargetsMatchExpected: false
+))
+precondition(!ControlPolicy.confirmationMatches(
+    acknowledgement,
+    ownerUID: 501,
+    now: 103,
+    fanTargetsMatchExpected: true
+))
+precondition(!ControlPolicy.confirmationMatches(
+    acknowledgement,
+    ownerUID: 502,
+    now: 102,
+    fanTargetsMatchExpected: true
+))
+precondition(!ControlPolicy.confirmationMatches(
+    acknowledgement,
+    ownerUID: 501,
+    now: 102,
+    fanTargetsMatchExpected: true,
     heartbeatTimeout: .infinity
+))
+precondition(!ControlPolicy.confirmationMatches(
+    ControlAcknowledgement(heartbeat: 100, percentage: 101, ownerUID: 501),
+    ownerUID: 501,
+    now: 102,
+    fanTargetsMatchExpected: true
 ))
 
 var confirmation = ControlConfirmationDeadline()
 confirmation.start(at: 100)
 precondition(confirmation.failure(isConfirmed: false, at: 103.9) == nil)
-precondition(confirmation.failure(isConfirmed: true, at: 104) == .neverConfirmed)
+precondition(confirmation.failure(isConfirmed: true, at: 104) == nil)
+confirmation.start(at: 100)
+precondition(confirmation.failure(isConfirmed: false, at: 104) == .neverConfirmed)
 confirmation.start(at: 200)
 precondition(confirmation.failure(isConfirmed: true, at: 201) == nil)
 precondition(confirmation.failure(isConfirmed: false, at: 202) == nil)
-precondition(confirmation.failure(isConfirmed: true, at: 206) == .lost)
+precondition(confirmation.failure(isConfirmed: true, at: 206) == nil)
+precondition(confirmation.failure(isConfirmed: false, at: 207) == nil)
+precondition(confirmation.failure(isConfirmed: false, at: 211) == .lost)
+
+var controlLoop = ControlLoopSchedule()
+precondition(controlLoop.tick(isEnabled: true) == ControlLoopWork(
+    refreshHeartbeat: true,
+    startPoll: true
+))
+for _ in 0..<10 {
+    precondition(controlLoop.tick(isEnabled: true) == ControlLoopWork(
+        refreshHeartbeat: true,
+        startPoll: false
+    ))
+}
+controlLoop.finishPoll()
+precondition(controlLoop.tick(isEnabled: true) == ControlLoopWork(
+    refreshHeartbeat: true,
+    startPoll: true
+))
+controlLoop.finishPoll()
+precondition(controlLoop.tick(isEnabled: false) == ControlLoopWork(
+    refreshHeartbeat: false,
+    startPoll: true
+))
 
 var activeControlTransition = ActiveControlTransition()
 precondition([
@@ -367,6 +460,52 @@ precondition(TemperatureHistory.decode(from: Data(#"[{"timestamp":100,"temperatu
 precondition(TemperatureHistory.decode(from: try! JSONEncoder().encode(
     (0...1_500).map { TemperatureSample(timestamp: Double($0), temperature: 55) }
 )) == nil)
+
+let recorderDirectory = FileManager.default.temporaryDirectory
+    .appendingPathComponent("FanCurveRecorderCheck-\(UUID().uuidString)", isDirectory: true)
+defer { try? FileManager.default.removeItem(at: recorderDirectory) }
+let recorderURL = recorderDirectory.appendingPathComponent("control-events.jsonl")
+let recorder = ControlEventRecorder(fileURL: recorderURL, maximumBytes: 1_024)
+recorder.record(ControlEvent(
+    kind: .launched,
+    timestamp: 100,
+    message: "check",
+    expectedPercentage: 40,
+    state: ControlStateSnapshot(
+        present: true,
+        valid: true,
+        enabled: true,
+        percentage: 40,
+        heartbeatAge: 0.2
+    ),
+    acknowledgement: ControlAcknowledgementSnapshot(
+        present: true,
+        valid: true,
+        percentage: 40,
+        heartbeatAge: 0.3
+    ),
+    fans: [ControlFanSnapshot(id: 0, mode: "forced", actualRPM: 3_000, targetRPM: 3_100)],
+    temperature: 70,
+    pollDuration: 0.5,
+    thermalState: "nominal"
+))
+precondition(FileManager.default.fileExists(atPath: recorderURL.path))
+let firstRecording = try! String(contentsOf: recorderURL, encoding: .utf8)
+precondition(firstRecording.split(whereSeparator: \.isNewline).count == 1)
+precondition(firstRecording.contains(#""kind":"launched""#))
+precondition(firstRecording.contains(#""heartbeatAge":0.2"#))
+for index in 0..<20 {
+    recorder.record(ControlEvent(
+        kind: .controlLost,
+        timestamp: Double(101 + index),
+        message: String(repeating: "x", count: 120)
+    ))
+}
+precondition(
+    FileManager.default.fileExists(atPath: recorderURL.path + ".1"),
+    "recorder must rotate; files: \((try? FileManager.default.contentsOfDirectory(atPath: recorderDirectory.path)) ?? []) size: \((try? Data(contentsOf: recorderURL).count) ?? -1)"
+)
+precondition((try! Data(contentsOf: recorderURL)).count <= 1_024)
 
 var wakeRecovery = WakeRecovery()
 let oldPoll = wakeRecovery.beginPoll()!

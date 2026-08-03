@@ -138,6 +138,95 @@ public struct FanCurve: Sendable {
         return last.percentage
     }
 }
+public struct FanBudget: Codable, Equatable, Sendable {
+    public let enabled: Bool
+    public let ceilingPercentage: Int
+    public let coolingPriority: Int
+
+    public static let disabled = FanBudget(
+        enabled: false,
+        ceilingPercentage: 100,
+        coolingPriority: 0
+    )
+
+    public init(
+        enabled: Bool = false,
+        ceilingPercentage: Int = 100,
+        coolingPriority: Int = 0
+    ) {
+        self.enabled = enabled
+        self.ceilingPercentage = min(100, max(0, ceilingPercentage))
+        self.coolingPriority = min(100, max(0, coolingPriority))
+    }
+
+    public func applying(to percentage: Int) -> Int {
+        let base = min(100, max(0, percentage))
+        guard enabled else { return base }
+        let boost = ((100 - base) * coolingPriority + 50) / 100
+        return min(ceilingPercentage, min(100, base + boost))
+    }
+
+    public func caps(_ percentage: Int) -> Bool {
+        guard enabled else { return false }
+        let base = min(100, max(0, percentage))
+        let boost = ((100 - base) * coolingPriority + 50) / 100
+        return ceilingPercentage < min(100, base + boost)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case enabled
+        case ceilingPercentage
+        case coolingPriority
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            enabled: try container.decodeIfPresent(Bool.self, forKey: .enabled) ?? false,
+            ceilingPercentage: try container.decodeIfPresent(Int.self, forKey: .ceilingPercentage) ?? 100,
+            coolingPriority: try container.decodeIfPresent(Int.self, forKey: .coolingPriority) ?? 0
+        )
+    }
+}
+
+public enum FanSceneCatalog {
+    public static let names = ["Balanced", "Quiet", "Cooling"]
+    public static let defaultProfile = 0
+    public static let quietProfile = 1
+    public static let batteryProfile = quietProfile
+    public static let externalPowerProfile = defaultProfile
+}
+
+public enum ScenePowerSource: String, Codable, Sendable {
+    case battery
+    case external
+    case ups
+    case unknown
+}
+
+public enum SceneSelection {
+    public static func profile(
+        for powerSource: ScenePowerSource,
+        automatic: Bool
+    ) -> Int? {
+        guard automatic else { return nil }
+        switch powerSource {
+        case .battery:
+            return FanSceneCatalog.batteryProfile
+        case .external, .ups, .unknown:
+            return FanSceneCatalog.externalPowerProfile
+        }
+    }
+    public static func changesProfile(
+        currentProfile: Int,
+        for powerSource: ScenePowerSource,
+        automatic: Bool
+    ) -> Bool {
+        profile(for: powerSource, automatic: automatic).map { $0 != currentProfile } ?? false
+    }
+
+}
+
 
 public struct ControlState: Codable, Sendable {
     public let enabled: Bool
@@ -227,15 +316,16 @@ public enum ControlPolicy {
         return true
     }
 
-    public static func acknowledgementMatches(
+    public static func confirmationMatches(
         _ acknowledgement: ControlAcknowledgement,
-        expectedPercentage: Int,
         ownerUID: UInt32,
         now: TimeInterval,
+        fanTargetsMatchExpected: Bool,
         heartbeatTimeout: TimeInterval = 2.5
     ) -> Bool {
-        acknowledgement.ownerUID == ownerUID
-            && acknowledgement.percentage == expectedPercentage
+        fanTargetsMatchExpected
+            && acknowledgement.ownerUID == ownerUID
+            && (0...100).contains(acknowledgement.percentage)
             && acknowledgement.heartbeat.isFinite
             && now.isFinite
             && heartbeatTimeout.isFinite
@@ -273,17 +363,46 @@ public struct ControlConfirmationDeadline: Sendable {
         guard time.isFinite, timeout.isFinite, timeout > 0 else {
             return hasConfirmed ? .lost : .neverConfirmed
         }
-        if let missingSince,
-           !missingSince.isFinite || time < missingSince || time - missingSince >= timeout {
-            return hasConfirmed ? .lost : .neverConfirmed
-        }
         if isConfirmed {
             missingSince = nil
             hasConfirmed = true
             return nil
         }
+        if let missingSince,
+           !missingSince.isFinite || time < missingSince || time - missingSince >= timeout {
+            return hasConfirmed ? .lost : .neverConfirmed
+        }
         if missingSince == nil { missingSince = time }
         return nil
+    }
+}
+
+public struct ControlLoopWork: Equatable, Sendable {
+    public let refreshHeartbeat: Bool
+    public let startPoll: Bool
+
+    public init(refreshHeartbeat: Bool, startPoll: Bool) {
+        self.refreshHeartbeat = refreshHeartbeat
+        self.startPoll = startPoll
+    }
+}
+
+public struct ControlLoopSchedule: Sendable {
+    private var pollIsRunning = false
+
+    public init() {}
+
+    public mutating func tick(isEnabled: Bool) -> ControlLoopWork {
+        let startPoll = !pollIsRunning
+        if startPoll { pollIsRunning = true }
+        return ControlLoopWork(
+            refreshHeartbeat: isEnabled,
+            startPoll: startPoll
+        )
+    }
+
+    public mutating func finishPoll() {
+        pollIsRunning = false
     }
 }
 
@@ -378,6 +497,43 @@ public enum FanSmoothing {
         return current + min(riseLimit, max(-fallLimit, difference))
     }
 }
+public struct FanOutputResolution: Equatable, Sendable {
+    public let percentage: Int
+    public let targetPercentage: Int
+    public let budgetCapped: Bool
+
+    public init(percentage: Int, targetPercentage: Int, budgetCapped: Bool) {
+        self.percentage = min(100, max(0, percentage))
+        self.targetPercentage = min(100, max(0, targetPercentage))
+        self.budgetCapped = budgetCapped
+    }
+}
+
+public enum FanOutputResolver {
+    public static func resolve(
+        curvePercentage: Int,
+        currentPercentage: Int,
+        isEnabled: Bool,
+        budget: FanBudget,
+        advanceSmoothing: Bool
+    ) -> FanOutputResolution {
+        let target = budget.applying(to: curvePercentage)
+        let smoothed = isEnabled
+            ? FanSmoothing.next(
+                current: currentPercentage,
+                target: target,
+                advance: advanceSmoothing
+            )
+            : target
+        let percentage = target < currentPercentage ? target : smoothed
+        return FanOutputResolution(
+            percentage: percentage,
+            targetPercentage: target,
+            budgetCapped: budget.caps(curvePercentage)
+        )
+    }
+}
+
 
 public enum ControlDisplayState: String {
     case active = "Active"

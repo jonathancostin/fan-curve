@@ -6,6 +6,7 @@ import ServiceManagement
 package protocol FanCurveControlling: AnyObject {
     var points: [CurvePoint] { get }
     var selectedProfile: Int { get }
+    var sceneName: String { get }
     var averageTemperature: Double? { get }
     var temperatureHistory: [TemperatureSample] { get }
     var outputPercentage: Int { get }
@@ -17,6 +18,10 @@ package protocol FanCurveControlling: AnyObject {
     var isBusy: Bool { get }
     var helperInstalled: Bool { get }
     var resumeAfterLaunch: Bool { get }
+    var sceneBudgets: [FanBudget] { get }
+    var automaticScenes: Bool { get }
+    var budgetCapped: Bool { get }
+    var budgetDescription: String { get }
     var status: String { get }
     var onUpdate: (() -> Void)? { get set }
     var needsSupportConfirmation: Bool { get }
@@ -26,6 +31,10 @@ package protocol FanCurveControlling: AnyObject {
 
     func updatePoints(_ points: [CurvePoint])
     func selectProfile(_ profile: Int)
+    func setBudgetEnabled(_ enabled: Bool)
+    func setBudgetCeiling(_ percentage: Int)
+    func setCoolingPriority(_ percentage: Int)
+    func setAutomaticScenes(_ enabled: Bool)
     func resetPoints()
     func copyCurve()
     func pasteCurve()
@@ -572,7 +581,7 @@ package final class MainViewController: NSViewController {
     private let systemActions: SystemActions
     private let statusLabel = NSTextField(labelWithString: "Apple automatic control")
     private let toggle = NSSwitch()
-    private let profileControl = NSSegmentedControl(labels: ["1", "2", "3"], trackingMode: .selectOne, target: nil, action: nil)
+    private let profileControl = NSSegmentedControl(labels: FanSceneCatalog.names, trackingMode: .selectOne, target: nil, action: nil)
     private let graph = CurveView()
     private let historyGraph = TemperatureHistoryView()
     private let historyRange = NSSegmentedControl(labels: ["15m", "1h", "6h", "24h"], trackingMode: .selectOne, target: nil, action: nil)
@@ -590,6 +599,14 @@ package final class MainViewController: NSViewController {
     private let copyReportButton = NSButton(title: "Copy Support Report", target: nil, action: nil)
     private let loginToggle = NSSwitch()
     private let resumeToggle = NSSwitch()
+    private let budgetToggle = NSSwitch()
+    private let budgetStatusLabel = NSTextField(labelWithString: "Budget off")
+    private let budgetCeilingSlider = NSSlider(value: 100, minValue: 0, maxValue: 100, target: nil, action: nil)
+    private let budgetCeilingValue = NSTextField(labelWithString: "100%")
+    private let coolingPrioritySlider = NSSlider(value: 0, minValue: 0, maxValue: 100, target: nil, action: nil)
+    private let coolingPriorityValue = NSTextField(labelWithString: "0%")
+    private let automaticScenesToggle = NSSwitch()
+    private let contextLabel = NSTextField(labelWithString: "Battery → Quiet · AC → Balanced")
     private let hardwareLabel = NSTextField(labelWithString: "Checking hardware…")
 
     package init(controller: FanCurveControlling, systemActions: SystemActions? = nil) {
@@ -609,13 +626,13 @@ package final class MainViewController: NSViewController {
         }
         graph.onSelectionChange = { [weak self] in self?.refreshPointControls() }
         graph.translatesAutoresizingMaskIntoConstraints = false
-        graph.heightAnchor.constraint(equalToConstant: 200).isActive = true
+        graph.heightAnchor.constraint(equalToConstant: 170).isActive = true
         profileControl.selectedSegment = controller.selectedProfile
         profileControl.target = self
         profileControl.action = #selector(selectProfile)
-        profileControl.setAccessibilityLabel("Saved profile")
+        profileControl.setAccessibilityLabel("Scene")
         historyGraph.translatesAutoresizingMaskIntoConstraints = false
-        historyGraph.heightAnchor.constraint(equalToConstant: 180).isActive = true
+        historyGraph.heightAnchor.constraint(equalToConstant: 120).isActive = true
         historyRange.selectedSegment = 1
         historyRange.target = self
         historyRange.action = #selector(changeHistoryRange)
@@ -624,6 +641,24 @@ package final class MainViewController: NSViewController {
         fanHistoryToggle.target = self
         fanHistoryToggle.action = #selector(toggleFanHistory)
         fanHistoryToggle.controlSize = .small
+        budgetToggle.target = self
+        budgetToggle.action = #selector(toggleBudget)
+        budgetToggle.setAccessibilityLabel("Use scene budget")
+        budgetCeilingSlider.target = self
+        budgetCeilingSlider.action = #selector(changeBudgetCeiling)
+        budgetCeilingSlider.isContinuous = false
+        budgetCeilingSlider.setAccessibilityLabel("Fan budget ceiling percentage")
+        budgetCeilingValue.alignment = .right
+        budgetCeilingValue.widthAnchor.constraint(equalToConstant: 38).isActive = true
+        coolingPrioritySlider.target = self
+        coolingPrioritySlider.action = #selector(changeCoolingPriority)
+        coolingPrioritySlider.isContinuous = false
+        coolingPrioritySlider.setAccessibilityLabel("Cooling priority percentage")
+        coolingPriorityValue.alignment = .right
+        coolingPriorityValue.widthAnchor.constraint(equalToConstant: 38).isActive = true
+        automaticScenesToggle.target = self
+        automaticScenesToggle.action = #selector(toggleAutomaticScenes)
+        automaticScenesToggle.setAccessibilityLabel("Automatically choose scene on power")
 
         addPointButton.target = self
         addPointButton.action = #selector(addPoint)
@@ -671,6 +706,31 @@ package final class MainViewController: NSViewController {
             $0.controlSize = .small
         }
         toggle.setAccessibilityLabel("Use fan curve")
+        budgetToggle.controlSize = .small
+        let budgetLabel = NSTextField(labelWithString: "Scene budget")
+        budgetLabel.font = .systemFont(ofSize: 13, weight: .medium)
+        budgetStatusLabel.font = .systemFont(ofSize: 10)
+        budgetStatusLabel.textColor = .secondaryLabelColor
+        budgetStatusLabel.alignment = .right
+        let budgetRow = NSStackView(views: [budgetLabel, budgetStatusLabel, budgetToggle])
+        budgetStatusLabel.setAccessibilityLabel("Scene budget status")
+        let ceilingRow = NSStackView(views: [
+            NSTextField(labelWithString: "Fan budget ceiling"),
+            budgetCeilingSlider,
+            budgetCeilingValue
+        ])
+        let priorityRow = NSStackView(views: [
+            NSTextField(labelWithString: "Cooling priority"),
+            coolingPrioritySlider,
+            coolingPriorityValue
+        ])
+        let automaticLabel = NSTextField(labelWithString: "Auto by power")
+        automaticLabel.font = .systemFont(ofSize: 13, weight: .medium)
+        contextLabel.font = .systemFont(ofSize: 10)
+        contextLabel.textColor = .secondaryLabelColor
+        contextLabel.alignment = .right
+        let automaticRow = NSStackView(views: [automaticLabel, contextLabel, automaticScenesToggle])
+
         loginToggle.setAccessibilityLabel("Launch at login")
         resumeToggle.setAccessibilityLabel("Resume curve after launch")
         let pointRow = NSStackView(views: [
@@ -678,8 +738,7 @@ package final class MainViewController: NSViewController {
             NSView(),
             copyCurveButton, pasteCurveButton
         ])
-
-        let profileLabel = NSTextField(labelWithString: "Profile")
+        let profileLabel = NSTextField(labelWithString: "Scene")
         profileLabel.font = .systemFont(ofSize: 13, weight: .medium)
         let profileRow = NSStackView(views: [profileLabel, NSView(), profileControl])
         toggle.target = self
@@ -721,9 +780,14 @@ package final class MainViewController: NSViewController {
             historyLabel, historyRange, NSView(), fanHistoryToggle
         ])
 
-        let stack = NSStackView(views: [profileRow, graph, pointEditRow, pointRow, historyControls, historyGraph, controlRow, loginRow, resumeRow, statusRow, quitRow])
+        let stack = NSStackView(views: [
+            profileRow, graph, pointEditRow, pointRow,
+            historyControls, historyGraph, controlRow,
+            budgetRow, ceilingRow, priorityRow, automaticRow,
+            loginRow, resumeRow, statusRow, quitRow
+        ])
         stack.orientation = .vertical
-        stack.spacing = 7
+        stack.spacing = 5
         stack.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(stack)
         NSLayoutConstraint.activate([
@@ -741,6 +805,7 @@ package final class MainViewController: NSViewController {
         statusLabel.stringValue = controller.status
         toggle.state = controller.isEnabled ? .on : .off
         toggle.isEnabled = !controller.isBusy
+        profileControl.isEnabled = !controller.isBusy && !controller.automaticScenes
         helperButton.title = helperNeedsUpdate
             ? "Update Helper"
             : controller.helperInstalled ? "Repair Helper" : "Install Helper"
@@ -750,6 +815,23 @@ package final class MainViewController: NSViewController {
         pasteCurveButton.isEnabled = !controller.isBusy
         loginToggle.state = systemActions.launchAtLoginRequested ? .on : .off
         resumeToggle.state = controller.resumeAfterLaunch ? .on : .off
+        let budget = controller.sceneBudgets.indices.contains(controller.selectedProfile)
+            ? controller.sceneBudgets[controller.selectedProfile]
+            : .disabled
+        budgetToggle.state = budget.enabled ? .on : .off
+        budgetStatusLabel.stringValue = controller.budgetDescription
+        budgetToggle.isEnabled = !controller.isBusy
+        budgetCeilingSlider.integerValue = budget.ceilingPercentage
+        budgetCeilingSlider.isEnabled = budget.enabled && !controller.isBusy
+        budgetCeilingValue.stringValue = "\(budget.ceilingPercentage)%"
+        coolingPrioritySlider.integerValue = budget.coolingPriority
+        coolingPrioritySlider.isEnabled = budget.enabled && !controller.isBusy
+        coolingPriorityValue.stringValue = "\(budget.coolingPriority)%"
+        automaticScenesToggle.state = controller.automaticScenes ? .on : .off
+        automaticScenesToggle.isEnabled = !controller.isBusy
+        contextLabel.stringValue = controller.automaticScenes
+            ? "Battery → Quiet · AC/UPS/unknown → Balanced"
+            : "Automatic scene switching off"
         let fanText = controller.detectedFanCount == 1 ? "1 fan" : "\(controller.detectedFanCount) fans"
         let helperText = helperNeedsUpdate
             ? "helper update needed"
@@ -765,6 +847,18 @@ package final class MainViewController: NSViewController {
         refreshPointControls()
     }
 
+    @objc private func toggleBudget() {
+        controller.setBudgetEnabled(budgetToggle.state == .on)
+    }
+    @objc private func changeBudgetCeiling() {
+        controller.setBudgetCeiling(budgetCeilingSlider.integerValue)
+    }
+    @objc private func changeCoolingPriority() {
+        controller.setCoolingPriority(coolingPrioritySlider.integerValue)
+    }
+    @objc private func toggleAutomaticScenes() {
+        controller.setAutomaticScenes(automaticScenesToggle.state == .on)
+    }
     @objc private func toggleControl() {
         guard toggle.state == .on, controller.needsSupportConfirmation else {
             controller.setEnabled(toggle.state == .on, reason: nil)
