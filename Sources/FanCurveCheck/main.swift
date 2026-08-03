@@ -348,6 +348,15 @@ precondition(ControlPolicy.fanModesAreForced(
     fans: [confirmationFan],
     telemetry: acknowledgedTelemetry
 ))
+precondition(ControlPolicy.confirmationMatches(
+    acknowledgement,
+    ownerUID: 501,
+    now: 102,
+    fanModesAreForced: ControlPolicy.fanModesAreForced(
+        fans: [confirmationFan],
+        telemetry: acknowledgedTelemetry
+    )
+))
 precondition(!ControlPolicy.fanModesAreForced(
     fans: [confirmationFan],
     telemetry: [FanTelemetry(
