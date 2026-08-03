@@ -337,43 +337,63 @@ precondition(SecureRegularFile.read(
 let acknowledgement = ControlAcknowledgement(heartbeat: 100, percentage: 50, ownerUID: 501)
 precondition(acknowledgement == ControlAcknowledgement(heartbeat: 100, percentage: 50, ownerUID: 501))
 precondition(acknowledgement != ControlAcknowledgement(heartbeat: 100, percentage: 51, ownerUID: 501))
+let confirmationFan = FanRange(id: 0, minimumRPM: 2_000, maximumRPM: 8_000)
+let acknowledgedTelemetry = [FanTelemetry(
+    id: 0,
+    actualRPM: 5_000,
+    targetRPM: 5_500,
+    mode: .forced
+)]
+precondition(ControlPolicy.fanModesAreForced(
+    fans: [confirmationFan],
+    telemetry: acknowledgedTelemetry
+))
+precondition(!ControlPolicy.fanModesAreForced(
+    fans: [confirmationFan],
+    telemetry: [FanTelemetry(
+        id: 0,
+        actualRPM: 5_000,
+        targetRPM: 5_500,
+        mode: .automatic
+    )]
+))
 let trailingAcknowledgement = ControlAcknowledgement(heartbeat: 100, percentage: 64, ownerUID: 501)
 precondition(ControlPolicy.confirmationMatches(
     trailingAcknowledgement,
     ownerUID: 501,
     now: 102,
-    fanTargetsMatchExpected: true
+    fanModesAreForced: true
 ))
 precondition(!ControlPolicy.confirmationMatches(
     acknowledgement,
     ownerUID: 501,
     now: 102,
-    fanTargetsMatchExpected: false
+    fanModesAreForced: false
 ))
 precondition(!ControlPolicy.confirmationMatches(
     acknowledgement,
     ownerUID: 501,
     now: 103,
-    fanTargetsMatchExpected: true
+    fanModesAreForced: true
 ))
 precondition(!ControlPolicy.confirmationMatches(
     acknowledgement,
     ownerUID: 502,
     now: 102,
-    fanTargetsMatchExpected: true
+    fanModesAreForced: true
 ))
 precondition(!ControlPolicy.confirmationMatches(
     acknowledgement,
     ownerUID: 501,
     now: 102,
-    fanTargetsMatchExpected: true,
+    fanModesAreForced: true,
     heartbeatTimeout: .infinity
 ))
 precondition(!ControlPolicy.confirmationMatches(
     ControlAcknowledgement(heartbeat: 100, percentage: 101, ownerUID: 501),
     ownerUID: 501,
     now: 102,
-    fanTargetsMatchExpected: true
+    fanModesAreForced: true
 ))
 
 var confirmation = ControlConfirmationDeadline()

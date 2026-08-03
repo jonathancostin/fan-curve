@@ -316,14 +316,26 @@ public enum ControlPolicy {
         return true
     }
 
+    public static func fanModesAreForced(
+        fans: [FanRange],
+        telemetry: [FanTelemetry]
+    ) -> Bool {
+        guard !fans.isEmpty else { return false }
+        return fans.allSatisfy { fan in
+            guard let fanTelemetry = telemetry.first(where: { $0.id == fan.id }),
+                  fanTelemetry.targetRPM != nil else { return false }
+            return fanTelemetry.mode == .forced
+        }
+    }
+
     public static func confirmationMatches(
         _ acknowledgement: ControlAcknowledgement,
         ownerUID: UInt32,
         now: TimeInterval,
-        fanTargetsMatchExpected: Bool,
+        fanModesAreForced: Bool,
         heartbeatTimeout: TimeInterval = 2.5
     ) -> Bool {
-        fanTargetsMatchExpected
+        fanModesAreForced
             && acknowledgement.ownerUID == ownerUID
             && (0...100).contains(acknowledgement.percentage)
             && acknowledgement.heartbeat.isFinite

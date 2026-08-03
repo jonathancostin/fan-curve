@@ -516,7 +516,6 @@ final class FanController: NSObject, UNUserNotificationCenterDelegate {
             let temperatureReadAt = ProcessInfo.processInfo.systemUptime
             if average != nil { self.availableSMCKeys = availableKeys }
             let active = Self.controlIsActive(
-                expectedPercentage: expectedPercentage,
                 acknowledgementPath: acknowledgementPath,
                 fans: fans,
                 fanTelemetry: fanTelemetry
@@ -703,7 +702,6 @@ final class FanController: NSObject, UNUserNotificationCenterDelegate {
     }
 
     private static func controlIsActive(
-        expectedPercentage: Int,
         acknowledgementPath: String,
         fans: [FanRange],
         fanTelemetry: [FanTelemetry]
@@ -717,17 +715,17 @@ final class FanController: NSObject, UNUserNotificationCenterDelegate {
               let acknowledgement = try? JSONDecoder().decode(ControlAcknowledgement.self, from: data) else {
             return false
         }
-        let fanTargetsMatchExpected = !fans.isEmpty && fans.allSatisfy { fan in
-            guard let telemetry = fanTelemetry.first(where: { $0.id == fan.id }),
-                  let target = telemetry.targetRPM else { return false }
-            return telemetry.mode == .forced
-                && abs(target - Double(fan.rpm(at: expectedPercentage))) <= 5
-        }
+        // The helper acknowledgement proves its last applied target. Fan telemetry
+        // can race that acknowledgement, so only require the fans to remain forced here.
+        let fanModesAreForced = ControlPolicy.fanModesAreForced(
+            fans: fans,
+            telemetry: fanTelemetry
+        )
         return ControlPolicy.confirmationMatches(
             acknowledgement,
             ownerUID: getuid(),
             now: Date().timeIntervalSince1970,
-            fanTargetsMatchExpected: fanTargetsMatchExpected
+            fanModesAreForced: fanModesAreForced
         )
     }
 
