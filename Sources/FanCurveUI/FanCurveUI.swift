@@ -301,7 +301,6 @@ package final class TemperatureHistoryView: NSView {
     private struct TelemetryMetric {
         let title: String
         let value: String
-        let detail: String
         let color: NSColor
     }
 
@@ -382,7 +381,7 @@ package final class TemperatureHistoryView: NSView {
         let end = Date().timeIntervalSince1970
         let summary = historySummary(at: end)
         drawGrid(in: plot)
-        drawPlotLabels(in: plot, attributes: attributes)
+        drawPlotLabels(in: plot, summary: summary, attributes: attributes)
         guard summary.samples.count > 1 else {
             ("Collecting history…" as NSString).draw(
                 at: CGPoint(x: plot.midX - 38, y: plot.midY - 6),
@@ -398,7 +397,7 @@ package final class TemperatureHistoryView: NSView {
         let start = end - duration
         for (index, sample) in summary.samples.enumerated() {
             let x = plot.minX + (sample.timestamp - start) / duration * plot.width
-            let y = plot.maxY - min(1, max(0, (sample.temperature - 20) / 90)) * plot.height
+            let y = temperatureY(sample.temperature, in: plot, summary: summary)
             index == 0 ? path.move(to: CGPoint(x: x, y: y)) : path.line(to: CGPoint(x: x, y: y))
         }
         NSColor.systemRed.setStroke()
@@ -420,13 +419,13 @@ package final class TemperatureHistoryView: NSView {
             }
         }
 
-        drawLiveEndpoint(for: summary.samples.last, in: plot, start: start)
-        if let hoveredSample { drawHover(for: hoveredSample, in: plot, start: start) }
+        drawLiveEndpoint(for: summary.samples.last, in: plot, start: start, summary: summary)
+        if let hoveredSample { drawHover(for: hoveredSample, in: plot, start: start, summary: summary) }
         drawHistoryFooter(summary, end: end)
     }
 
     private var historyPlot: CGRect {
-        CGRect(x: 34, y: 70, width: bounds.width - 68, height: bounds.height - 108)
+        CGRect(x: 14, y: 50, width: bounds.width - 28, height: bounds.height - 82)
     }
 
     private var durationText: String {
@@ -443,33 +442,28 @@ package final class TemperatureHistoryView: NSView {
             TelemetryMetric(
                 title: "CPU",
                 value: currentTemperature.map { String(format: "%.1f°C", $0) } ?? "—",
-                detail: "live average",
                 color: .systemOrange
             ),
-            TelemetryMetric(title: "OUTPUT", value: "\(currentFanPercentage)%", detail: "curve output", color: .systemBlue),
+            TelemetryMetric(title: "OUTPUT", value: "\(currentFanPercentage)%", color: .systemBlue),
             fanMetric(id: 0, color: .systemGreen),
             fanMetric(id: 1, color: .systemPurple)
         ]
         for (index, metric) in values.enumerated() {
             let x = CGFloat(index) * metricWidth
             if index > 0 {
-                NSColor.separatorColor.withAlphaComponent(0.65).setStroke()
+                NSColor.separatorColor.withAlphaComponent(0.35).setStroke()
                 let separator = NSBezierPath()
                 separator.move(to: CGPoint(x: x, y: 10))
-                separator.line(to: CGPoint(x: x, y: 48))
+                separator.line(to: CGPoint(x: x, y: 40))
                 separator.stroke()
             }
-            (metric.title as NSString).draw(at: CGPoint(x: x + 8, y: 8), withAttributes: [
+            (metric.title as NSString).draw(at: CGPoint(x: x + 10, y: 8), withAttributes: [
                 .font: NSFont.systemFont(ofSize: 9, weight: .medium),
                 .foregroundColor: NSColor.secondaryLabelColor
             ])
-            (metric.value as NSString).draw(at: CGPoint(x: x + 8, y: 25), withAttributes: [
+            (metric.value as NSString).draw(at: CGPoint(x: x + 10, y: 24), withAttributes: [
                 .font: NSFont.monospacedDigitSystemFont(ofSize: 14, weight: .semibold),
                 .foregroundColor: metric.color
-            ])
-            (metric.detail as NSString).draw(at: CGPoint(x: x + 8, y: 42), withAttributes: [
-                .font: NSFont.systemFont(ofSize: 9),
-                .foregroundColor: NSColor.secondaryLabelColor
             ])
         }
     }
@@ -494,11 +488,16 @@ package final class TemperatureHistoryView: NSView {
         }
     }
 
-    private func drawLiveEndpoint(for sample: TemperatureSample?, in plot: CGRect, start: TimeInterval) {
+    private func drawLiveEndpoint(
+        for sample: TemperatureSample?,
+        in plot: CGRect,
+        start: TimeInterval,
+        summary: HistorySummary
+    ) {
         guard let sample else { return }
         let point = CGPoint(
             x: plot.minX + (sample.timestamp - start) / duration * plot.width,
-            y: plot.maxY - min(1, max(0, (sample.temperature - 20) / 90)) * plot.height
+            y: temperatureY(sample.temperature, in: plot, summary: summary)
         )
         let guide = NSBezierPath()
         guide.move(to: CGPoint(x: plot.minX, y: point.y))
@@ -510,10 +509,15 @@ package final class TemperatureHistoryView: NSView {
         NSBezierPath(ovalIn: CGRect(x: point.x - 4, y: point.y - 4, width: 8, height: 8)).fill()
     }
 
-    private func drawHover(for sample: TemperatureSample, in plot: CGRect, start: TimeInterval) {
+    private func drawHover(
+        for sample: TemperatureSample,
+        in plot: CGRect,
+        start: TimeInterval,
+        summary: HistorySummary
+    ) {
         let point = CGPoint(
             x: plot.minX + (sample.timestamp - start) / duration * plot.width,
-            y: plot.maxY - min(1, max(0, (sample.temperature - 20) / 90)) * plot.height
+            y: temperatureY(sample.temperature, in: plot, summary: summary)
         )
         let crosshair = NSBezierPath()
         crosshair.move(to: CGPoint(x: point.x, y: plot.minY))
@@ -544,25 +548,34 @@ package final class TemperatureHistoryView: NSView {
         text.draw(at: CGPoint(x: x + 9, y: y + 7), withAttributes: attributes)
     }
 
-    private func drawPlotLabels(in plot: CGRect, attributes: [NSAttributedString.Key: Any]) {
-        ("TEMP °C" as NSString).draw(
-            at: CGPoint(x: plot.minX, y: 56),
-            withAttributes: attributes.merging([.foregroundColor: NSColor.systemRed]) { _, new in new }
-        )
-        ("110°C" as NSString).draw(at: CGPoint(x: 2, y: plot.minY), withAttributes: attributes)
-        ("20°C" as NSString).draw(at: CGPoint(x: 7, y: plot.maxY - 11), withAttributes: attributes)
-        if showsFanOutput {
-            let fanLabel = "OUTPUT %" as NSString
-            fanLabel.draw(
-                at: CGPoint(x: plot.maxX - fanLabel.size(withAttributes: attributes).width, y: 56),
-                withAttributes: attributes.merging([.foregroundColor: NSColor.systemBlue]) { _, new in new }
-            )
-            ("100%" as NSString).draw(at: CGPoint(x: plot.maxX + 4, y: plot.minY), withAttributes: attributes)
-            ("0%" as NSString).draw(at: CGPoint(x: plot.maxX + 4, y: plot.maxY - 11), withAttributes: attributes)
-        }
-        ("\(durationText) ago" as NSString).draw(at: CGPoint(x: plot.minX, y: plot.maxY - 11), withAttributes: attributes)
+    private func drawPlotLabels(
+        in plot: CGRect,
+        summary: HistorySummary,
+        attributes: [NSAttributedString.Key: Any]
+    ) {
+        let range = temperatureScale(for: summary)
+        let upper = String(format: "%.0f°C", range.upperBound) as NSString
+        upper.draw(at: CGPoint(x: plot.minX + 4, y: plot.minY + 3), withAttributes: attributes)
+        let lower = String(format: "%.0f°C", range.lowerBound) as NSString
+        lower.draw(at: CGPoint(x: plot.minX + 4, y: plot.maxY - 14), withAttributes: attributes)
+        ("\(durationText) ago" as NSString).draw(at: CGPoint(x: plot.minX + 42, y: plot.maxY - 14), withAttributes: attributes)
         let now = "now" as NSString
-        now.draw(at: CGPoint(x: plot.maxX - now.size(withAttributes: attributes).width, y: plot.maxY - 11), withAttributes: attributes)
+        now.draw(at: CGPoint(x: plot.maxX - now.size(withAttributes: attributes).width - 4, y: plot.maxY - 14), withAttributes: attributes)
+    }
+
+    private func temperatureScale(for summary: HistorySummary) -> ClosedRange<Double> {
+        guard let minimum = summary.minimum, let maximum = summary.maximum else { return 20...110 }
+        let spread = max(10, maximum - minimum)
+        let padding = max(3, spread * 0.2)
+        let lower = max(0, floor((minimum - padding) / 5) * 5)
+        let upper = min(115, ceil((maximum + padding) / 5) * 5)
+        return lower...(upper > lower ? upper : lower + 10)
+    }
+
+    private func temperatureY(_ temperature: Double, in plot: CGRect, summary: HistorySummary) -> CGFloat {
+        let range = temperatureScale(for: summary)
+        let progress = (temperature - range.lowerBound) / (range.upperBound - range.lowerBound)
+        return plot.maxY - min(1, max(0, progress)) * plot.height
     }
 
     private func drawHistoryFooter(_ summary: HistorySummary, end: TimeInterval) {
@@ -600,18 +613,14 @@ package final class TemperatureHistoryView: NSView {
 
     private func fanMetric(id: Int, color: NSColor) -> TelemetryMetric {
         guard let fan = fanTelemetry.first(where: { $0.id == id }) else {
-            return TelemetryMetric(title: "FAN \(id + 1) RPM", value: "—", detail: "not detected", color: color)
+            return TelemetryMetric(title: "FAN \(id + 1) RPM", value: "—", color: color)
         }
         let live = fan.actualRPM.map {
-            NumberFormatter.localizedString(from: NSNumber(value: $0.rounded()), number: .decimal)
-        } ?? "—"
-        let target = fan.targetRPM.map {
             NumberFormatter.localizedString(from: NSNumber(value: $0.rounded()), number: .decimal)
         } ?? "—"
         return TelemetryMetric(
             title: "FAN \(fan.id + 1) RPM",
             value: live,
-            detail: "→ \(target) · \(fan.modeText.lowercased())",
             color: color
         )
     }
@@ -722,13 +731,13 @@ package final class MainViewController: NSViewController {
         }
         graph.onSelectionChange = { [weak self] in self?.refreshPointControls() }
         graph.translatesAutoresizingMaskIntoConstraints = false
-        graph.heightAnchor.constraint(equalToConstant: 120).isActive = true
+        graph.heightAnchor.constraint(equalToConstant: 105).isActive = true
         profileControl.selectedSegment = controller.selectedProfile
         profileControl.target = self
         profileControl.action = #selector(selectProfile)
         profileControl.setAccessibilityLabel("Scene")
         historyGraph.translatesAutoresizingMaskIntoConstraints = false
-        historyGraph.heightAnchor.constraint(equalToConstant: 170).isActive = true
+        historyGraph.heightAnchor.constraint(equalToConstant: 185).isActive = true
         historyRange.selectedSegment = 1
         historyRange.target = self
         historyRange.action = #selector(changeHistoryRange)
