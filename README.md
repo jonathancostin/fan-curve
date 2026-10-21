@@ -2,6 +2,11 @@
 
 Fan Curve is a small macOS menu-bar app that adjusts fan speed from CPU temperature. It gives you a clear fan curve, live fan readings, and safe automatic recovery without a full hardware dashboard.
 
+## Status
+
+- Active. Distributed as a Homebrew cask from [jonathancostin/homebrew-tap](https://github.com/jonathancostin/homebrew-tap).
+- Fully tested only on the two-fan Apple M5 Pro MacBook Pro (`Mac17,9`). See [Mac support](#mac-support).
+
 ## What you can do
 
 - Set a fan curve by dragging points or entering exact values.
@@ -102,6 +107,15 @@ brew uninstall --cask fan-curve
 
 ## Build from source
 
+The SMC code lives in the `Vendor/Stats` Git submodule, so fetch it with the clone:
+
+```sh
+git clone --recurse-submodules https://github.com/jonathancostin/fan-curve.git
+cd fan-curve
+```
+
+In an existing clone, run `git submodule update --init --recursive` instead.
+
 ```sh
 ./scripts/build.sh
 open build/FanCurve.app
@@ -110,8 +124,24 @@ open build/FanCurve.app
 
 Run `./scripts/install-helper.sh uninstall` before deleting a source build. Developers should read [Development](DEVELOPING.md) before changing hardware support, helper behavior, or the release flow.
 
+Requires Swift 6.1 (SwiftPM) and macOS 13 or later.
+
+## Layout
+
+- `Package.swift`: SwiftPM manifest. Library targets `StatsSMC` (IOKit SMC access), `FanCurveCore`, `FanCurveUI`; executables `FanCurveApp`, `FanCurveHelper`, `FanCurveProbe`, `FanCurveCheck`, `FanCurveAppCheck`.
+- `Sources/`: one directory per target.
+- `Resources/`: app `Info.plist` and the helper's launchd plist `com.jonathan.FanCurveHelper.plist`.
+- `scripts/`: `build.sh` (builds and ad-hoc signs `build/FanCurve.app`), `install-helper.sh`, `install-local.sh`.
+- `Vendor/Stats`: SMC reader and writer, Git submodule.
+- `.github/workflows/`: `checks.yml` (pull requests), `release.yml` (pushes to `main` publish a release and update the Homebrew cask).
+- [SUPPORT.md](SUPPORT.md), [DEVELOPING.md](DEVELOPING.md).
+
 ## Privacy and source
 
 Fan Curve does not send fan or temperature data anywhere. Its support report leaves out serial numbers, account names, and hardware IDs.
 
 The SMC reader and writer come from [Stats](https://github.com/exelban/stats) under the MIT license and stay pinned as a Git submodule.
+
+## License
+
+MIT. See [LICENSE](LICENSE). The vendored Stats code keeps its own MIT license.
